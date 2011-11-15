@@ -1,13 +1,9 @@
 #!/bin/sh
 
-unset MAIL
-USER=turbo
-LOGNAME=turbo
-HOME=/home/turbo
-#HOSTS="Windows XP Professional,Windows Vista,Ubuntu Server 8.10,Ubuntu Desktop 8.10,Windows 7,Astrix,Debian ZFS Tests,JeOS"
-HOSTS="Astrix,Debian ZFS Tests,JeOS,Debian Squeeze amd64,Debian Lenny i386"
+# $Id: vboxhst,v 1.2 2011-11-15 18:25:57 turbo Exp $
+
+DEFAULT_HOSTS="Astrix,Debian ZFS Tests,JeOS,Debian Squeeze amd64,Debian Lenny i386"
 CACHE=/var/cache/vbox/vms
-export USER LOGNAME HOME
 
 case "$1" in
     start) 
@@ -20,9 +16,9 @@ case "$1" in
                 done
 
             rm -f $CACHE
-        elif [ -n "$HOSTS" ]; then
+        elif [ -n "$DEFAULT_HOSTS" ]; then
             echo "Starting VM: "
-            echo "$HOSTS" | sed 's@,@\
+            echo "$DEFAULT_HOSTS" | sed 's@,@\
 @g' | while read host; do
                 echo "* $host: "
                 /usr/bin/VBoxManage -nologo startvm "$host" -type headless

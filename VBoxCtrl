@@ -1,5 +1,7 @@
 #!/usr/bin/perl
 
+# $Id: VBoxCtrl,v 1.2 2011-11-15 18:25:57 turbo Exp $
+
 $CMD = "/usr/bin/VBoxManage -nologo";
 $TMPFILE = `tempfile -d /tmp -p vbox.`; chomp($TMPFILE);
 $OUT = "> $TMPFILE 2>&1";
