@@ -1,0 +1,63 @@
+#!/bin/sh
+
+unset MAIL
+USER=turbo
+LOGNAME=turbo
+HOME=/home/turbo
+#HOSTS="Windows XP Professional,Windows Vista,Ubuntu Server 8.10,Ubuntu Desktop 8.10,Windows 7,Astrix,Debian ZFS Tests,JeOS"
+HOSTS="Astrix,Debian ZFS Tests,JeOS,Debian Squeeze amd64,Debian Lenny i386"
+CACHE=/var/cache/vbox/vms
+export USER LOGNAME HOME
+
+case "$1" in
+    start) 
+        if [ -f $CACHE ]; then
+            echo "Starting VM: "
+            cat $CACHE | \
+                while read host; do
+                    echo "* $host: "
+                    /usr/bin/VBoxManage -nologo startvm "$host" -type headless
+                done
+
+            rm -f $CACHE
+        elif [ -n "$HOSTS" ]; then
+            echo "Starting VM: "
+            echo "$HOSTS" | sed 's@,@\
+@g' | while read host; do
+                echo "* $host: "
+                /usr/bin/VBoxManage -nologo startvm "$host" -type headless
+            done
+        else
+            echo "No VM's to start..."
+        fi
+        ;;
+
+    stop)
+        echo "Suspending VMs: "
+        /usr/bin/VBoxManage -nologo list runningvms | \
+            sed -e 's@ {.*@@' -e 's@"@@g' > $CACHE
+
+        cat $CACHE | \
+            while read host; do
+                echo -n "'$host' "
+                /usr/bin/VBoxManage -nologo controlvm "$host" savestate
+            done
+        ;;
+
+    forcequit)
+        echo "Shutting down VM: "
+        /usr/bin/VBoxManage -nologo list runningvms | \
+            sed -e 's@ {.*@@' -e 's@"@@g' | \
+            while read host; do
+                echo "* $host: "
+                /usr/bin/VBoxManage -nologo controlvm "$host" poweroff
+            done
+        ;;
+
+    *)
+	echo "Usage: $0 {start|stop}" >&2
+	exit 3
+	;;
+esac
+
+exit 0

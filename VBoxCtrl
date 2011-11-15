@@ -1,0 +1,347 @@
+#!/usr/bin/perl
+
+$CMD = "/usr/bin/VBoxManage -nologo";
+$TMPFILE = `tempfile -d /tmp -p vbox.`; chomp($TMPFILE);
+$OUT = "> $TMPFILE 2>&1";
+
+sub output_log() {
+    return if($OUT eq '');
+
+    open(LOG, "$TMPFILE") || die "Can't open $TMPFILE, $!\n";
+    while(! eof(LOG) ) {
+	$line = <LOG>;
+	next if($line =~ /Waiting for the VM to power on/);
+
+	print $line;
+    }
+    close(LOG);
+
+    unlink($TMPFILE);
+}
+
+# Unplugg all virtual CPUs
+sub unplug_cpus() {
+    $vm  = shift;
+    $max = shift;
+
+    for($i = 1; $i < $max; $i++) {
+	system("$CMD controlvm '$vm' unplugcpu $i 2> /dev/null");
+    }
+}
+
+# Hotplug CPUs
+sub plug_cpus() {
+    $vm = shift;
+    $nr = shift;
+
+    for($i = 1; $i < $nr; $i++) {
+	system("$CMD controlvm '$vm' plugcpu $i 2> /dev/null");
+    }
+}
+
+# -----
+# Get list of VM's
+open(CMD, "$CMD list --long vms |")
+    || die ("Can't call VBoxManage, $!\n");
+while(! eof(CMD) ) {
+    $line = <CMD>;
+    chomp($line);
+
+    if($line =~ /^Name:  /) {
+        $line =~ s/^Name:            //;
+
+	$name = $line;
+        $VMS{$name} = $name;
+
+	# Default values (can/will change below)
+	$CPUS_HOTPLUG{$line} = 0; # Can hotplug CPUs?
+	$CPUS_RUN{$line} = 1;	# Current number of running CPUs
+    } elsif($line =~ /^State:  /) {
+        $line =~ s/.*  //;
+        $line =~ s/ \(.*//;
+
+        $line =~ s/running/On/;
+        $line =~ s/powered off/Off/;
+        $line =~ s/paused/Paused/;
+
+        $STATE{$name} = $line;
+    } elsif($line =~ /^VRDE:.*enabled/) {
+        $line =~ s/.*Ports //;
+        $line =~ s/,.*//;
+
+        $PORTS{$name} = $line;
+    } elsif($line =~ /^VRDE:.*disabled/) {
+        $PORTS{$name} = "disabled";
+    } elsif($line =~ /^Number of CPUs:/) {
+	$line =~ s/.* //;
+
+	$CPUS_MAX{$name} =  $line;
+    } elsif($line =~ /^ACPI:.*on/) {
+	$CPUS_HOTPLUG{$name} = 1;
+    }
+}
+close(CMD);
+
+# Output list of VM's (with current state)
+$i = 1;
+foreach $name (sort keys %VMS) {
+    if(($#ARGV == -1) || ($ARGV[0] =~ /^l/i)) {
+	printf("%3d: %-30s %-3s (%s)\n",
+	       $i, $VMS{$name}, $STATE{$name}, $PORTS{$name});
+    }
+
+    # Setup a VM list, sorted by name
+    $nr = sprintf("%0.3d", $i);
+    $VM_LIST{$nr} = $name;
+
+    # Setup a VM listen port (VRDP), sorted by port
+    $port = $PORTS{$name};
+    $PORT_LIST{$port} = $name;
+
+    $i++;
+}
+
+if($ARGV[0] =~ /^l/i) {
+    $EXIT=0;
+    goto bye;
+} elsif($#ARGV == 1) {
+    $cmd = $ARGV[0];
+} else {
+    # -----
+    # Choose what to do with the VM (Start, Stop, Pause)
+    print "Command: [S]top, [P]ause, [R]un, Restar[t], S[n]apshot, [I]nfo,\n";
+    print "         [C]lone, (un)[H]otplug CPUs or [Q]uit? ";
+    $cmd = <STDIN>;
+    chomp($cmd);
+}
+
+# Get command
+if($cmd =~ /^p/i) {      $cmd="Pause";
+} elsif($cmd =~ /^s/i) { $cmd="Stop";
+} elsif($cmd =~ /^r/i) { $cmd="Start";
+} elsif($cmd =~ /^n/i) { $cmd="Snapshot";
+} elsif($cmd =~ /^i/i) { $cmd="Display";
+} elsif($cmd =~ /^t/i) { $cmd="Restart";
+} elsif($cmd =~ /^h/i) { $cmd="Hotplug";
+} elsif($cmd =~ /^c/i) { $cmd="Clone";
+} elsif($cmd =~ /^q/i) { $EXIT=0; goto bye;
+} else {
+    print "No such command!\n";
+    $EXIT=0;
+    goto bye;
+}
+
+# Get VM number
+if($#ARGV == 1) {
+    $vm = $ARGV[1];
+} else {
+    # -----
+    # Choose _which_ VM to control
+    print "$cmd which VM [1-$i]? ";
+    $vm = <STDIN>;
+    chomp($vm);
+}
+
+# Get VM name
+$nr = sprintf("%0.3d", $vm);
+$name = $VM_LIST{$nr};
+
+if($VMS{$name}) {
+    printf "VM: '$name' ($nr)\n" if($#ARGV == 1);
+    
+    # -----
+    # START a VM
+    if($cmd eq 'Start') {
+        if($STATE{$name} eq 'Paused' ) {
+            system("$CMD controlvm '$name' resume $OUT");
+        } elsif(($STATE{$name} eq 'Off') or ($STATE{$name} eq 'saved')) {
+            system("$CMD startvm '$name' -type headless $OUT");
+        } else {
+            print "Already running...\n";
+	    $EXIT=0;
+	    goto bye;
+        }
+	
+        sleep(1);
+	
+        $state=`$CMD showvminfo "$name" -machinereadable | grep ^VMState= | sed -e 's/.*="//' -e 's/"//'`;
+        chomp($state);
+        if($state eq 'running') {
+            $port=`$CMD showvminfo "$name" -machinereadable | grep '^vrdeport=' | sed "s/.*=//"`;
+            chomp($port);
+	    
+            print "Listening on RDP port: $port\n";
+        } else {
+            print "Failed to start!\n\n";
+	    &output_log();
+	    $EXIT=1;
+	    goto bye;
+        }
+	
+    # -----
+    # STOP a VM
+    } elsif($cmd eq 'Stop' ) {
+        if($STATE{$name} eq 'On' || $STATE{$name} eq 'unknown' || $STATE{$name} eq 'Paused') {
+            system("$CMD controlvm '$name' poweroff $OUT");
+        } else {
+            print "VM not running...\n";
+	    $EXIT=0;
+	    goto bye;
+        }
+
+    # -----
+    # RESTART a VM
+    } elsif($cmd eq 'Restart') {
+        if($STATE{$name} eq 'On' || $STATE{$name} eq 'unknown' || $STATE{$name} eq 'Paused' ||
+	    $STATE{$name} eq 'guru meditation') {
+            if(! system("$CMD controlvm '$name' reset $OUT")) {
+		# Couldn't just reset it...
+                print "Powering down '$name'... ";
+		system("$CMD controlvm '$name' poweroff $OUT");
+                print "done.\n";
+
+                sleep(2);
+
+                print "Starting '$name'... ";
+		system("$CMD startvm '$name' -type headless $OUT");
+                print "done.\n";
+	    }
+        } else {
+            print "VM not running...\n";
+	    $EXIT=0;
+	    goto bye;
+        }
+
+    # -----
+    # PAUSE a VM
+    } elsif($cmd eq 'Pause' ) {
+        if($STATE{$name} eq 'On' ) {
+            system("$CMD controlvm '$name' pause $OUT");
+        } else {
+            print "VM not running...\n";
+	    $EXIT=0;
+	    goto bye;
+        }
+
+    # -----
+    # VIEW info of a VM
+    } elsif($cmd eq 'Display') {
+        if(system("$CMD showvminfo '$name' -machinereadable | less")) {
+	    &output_log();
+	    $EXIT=1;
+	    goto bye;
+        }
+
+    # -----
+    # SNAPSHOT a VM
+    } elsif($cmd eq 'Snapshot') {
+        print "Snapshot name: ";
+        $snap_name = <STDIN>;
+        chomp($snap_name);
+
+        print "Snapshot description: ";
+        $snap_desc = <STDIN>;
+        chomp($snap_desc);
+
+        if(system("$CMD snapshot '$name' take '$snap_name' -desc '$snap_desc' $OUT")) {
+	    &output_log();
+	    $EXIT=1;
+	    goto bye;
+        }
+
+    # -----
+    # CLONE a VM
+    } elsif($cmd eq 'Clone') {
+        print "!! WARNING: The VM '$name' will be (temporarily) powered off !!\n";
+        print "New name: ";
+        $new_name = <STDIN>;
+        chomp($new_name);
+
+        # Get a new (VRDP) listening port
+        $new_port = (sort keys %PORT_LIST)[-1] + 1;
+
+        $restart = 0;
+        if($STATE{$name} eq 'On' ) {
+            print "Pausing '$name'... ";
+            if(system("$CMD controlvm '$name' savestate $OUT")) {
+                print "ERROR.\n";
+
+                &output_log();
+                $EXIT=1;
+                goto bye;
+            } 
+            print "done.\n";
+
+            $restart = 1;
+
+            print "Cloning '$name'... ";
+            if(system("$CMD clonevm '$name' --mode all --name '$new_name' --register $OUT")) {
+                print "ERROR.\n";
+
+                &output_log();
+                $EXIT=1;
+            } else {
+                print "done.\n";
+
+                print "Setting new VRDE port and MAC address... ";
+                system("$CMD controlvm '$new_name' poweroff $OUT");
+                system("$CMD modifyvm '$new_name' --vrdeport $new_port --macaddress1 auto");
+                print "done.\n";
+
+                print "Starting '$new_name'... ";
+                system("$CMD startvm '$new_name' -type headless $OUT");
+                print "done.\n";
+            }
+
+            if($restart) {
+                print "Resuming '$name'... ";
+                system("$CMD startvm '$name' -type headless $OUT");
+                print "done.\n";
+            }
+        }
+
+    # -----
+    # Change number of CPU's
+    } elsif($cmd eq 'Hotplug') {
+	if($CPUS_HOTPLUG{$name}) {
+	    printf("Maximum number of CPUs: %d\n", $CPUS_MAX{$name});
+# Can't seem to find how many is actually running...
+#	    printf("Current nummber of running CPUs: %d\n", $CPUS_RUN{$name});
+	    print "Change to: ";
+	    $cpus = <STDIN>;
+	    chomp($cpus);
+
+	    if ($cpus !~ /^[+-]?\d+$/ ) {
+		print "ERROR: Need numeric input!\n";
+		$EXIT=1;
+		goto bye;
+	    }
+
+	    if($cpus-1 >= $CPUS_MAX{$name}) {
+		print "ERROR: Can't change to more than maximum.\n";
+		goto bye;
+	    }
+
+	    # -----
+	    # NOTE:
+	    #   First unplug ALL virtual CPUs
+	    #   Then add the number we've requested
+	    #   -> This because we can't know WHICH
+	    #      virtual cpus is running (0, 3 and 6?)
+	    &unplug_cpus($name, $CPUS_MAX{$name});
+	    &plug_cpus($name, $cpus);
+	} else {
+	    print "ERROR: VM can't (un)hotplug CPUs!\n";
+	    $EXIT=1;
+	    goto bye;
+	}
+    }
+} else {
+    print "No such VM!";
+    $EXIT=1;
+    goto bye;
+}
+
+bye:
+    unlink($TMPFILE);
+    exit($EXIT);
