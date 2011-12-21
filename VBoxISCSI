@@ -2,6 +2,10 @@
 
 $| = 1;
 
+END {
+    unlink($TMPFILE);
+}
+
 $CMD = "/usr/bin/VBoxManage -nologo";
 $TMPFILE = `tempfile -d /tmp -p vbox.`; chomp($TMPFILE);
 $OUT = "> $TMPFILE 2>&1";
@@ -17,8 +21,6 @@ sub output_log() {
 	print $line;
     }
     close(LOG);
-
-    unlink($TMPFILE);
 }
 
 sub run() {
@@ -329,7 +331,7 @@ if($cmd eq "Delete") {
 
 # ========================================================================================================
 
-if(($cmd eq "Add") && $vm_name && $target_server && $target_name && $controller_name && $next_dev) {
+if(($cmd eq "Add") && $vm_name && $target_server && $target_name && $controller_name && defined($next_dev)) {
     # VBoxManage storageattach "Nexenta CP 1.0.1" --storagectl "SATA Controller" \
     #	--port 5 --type hdd --medium iscsi --server 192.168.69.8:3260 \
     #	--target iqn.2011-12.com.bayour:storage.nexenta.cp1 --lun 0
