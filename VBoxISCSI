@@ -1,0 +1,316 @@
+#!/usr/bin/perl
+
+$| = 1;
+
+$CMD = "/usr/bin/VBoxManage -nologo";
+$TMPFILE = `tempfile -d /tmp -p vbox.`; chomp($TMPFILE);
+$OUT = "> $TMPFILE 2>&1";
+
+sub output_log() {
+    return if($OUT eq '');
+
+    open(LOG, "$TMPFILE") || die "Can't open $TMPFILE, $!\n";
+    while(! eof(LOG) ) {
+	$line = <LOG>;
+	next if($line =~ /Waiting for the VM to power on/);
+
+	print $line;
+    }
+    close(LOG);
+
+    unlink($TMPFILE);
+}
+
+sub get_machine_name() {
+    # --------------------------------
+    # Output list of VM's (with current state)
+    $i = 1;
+    foreach $vmname (sort keys %VMS) {
+	if(($#ARGV == -1) || ($ARGV[0] =~ /^l/i)) {
+	    printf("%3d: %-30s %-3s\n",
+		   $i, $VMS{$vmname}, $STATE{$vmname});
+	}
+
+	# Setup a VM list, sorted by name
+	$nr = sprintf("%0.3d", $i);
+	$VM_LIST{$nr} = $vmname;
+
+	$i++;
+    }
+
+    # Get VM number
+    if($#ARGV == 1) {
+	$vm = $ARGV[1];
+    } else {
+	# -----
+	# Choose _which_ VM to control
+	if($cmd eq "Add") {
+	    printf("Add '%s' to which VM [1-%d]? ", $target_name, $i-1);
+	} else {
+	    printf("Delete from which VM [1-%d]? ", $i-1);
+	}
+	$vm = <STDIN>;
+	chomp($vm);
+    }
+
+    # --------------------------------
+    # Get VM/target name
+    $nr = sprintf("%0.3d", $vm);
+    $vm_name = $VM_LIST{$nr};
+}
+
+sub get_devices() {
+    my($line, $nr, $dev, $uuid, $i);
+
+    # --------------------------------
+    # Retreive all devices for this VM and Controller
+    $next_dev = 0;
+    open(CMD, "$CMD showvminfo \"$vm_name\" |")
+	|| die ("Can't call VBoxManage showvminfo, $!\n");
+    while(! eof(CMD) ) {
+	$line = <CMD>;
+	chomp($line);
+
+	if($line =~ /^$STORAGE{$vm_name}{$controller_nr}{"CTRL"}/) {
+	    $nr = $line;
+	    $nr =~ s/$STORAGE{$vm_name}{$controller_nr}{"CTRL"} \(//;
+	    $nr =~ s/,.*//;
+
+	    if($line !~ /Empty$/) {
+		$dev = $line;
+		$dev =~ s/.*[0-9]\): //;
+		$dev =~ s/ \(UUID.*//;
+
+		$uuid = $line;
+		$uuid =~ s/.*UUID: (.*)\)/$1/;
+	    } else {
+		$dev  = "Empty";
+		$uuid = "";
+	    }
+
+#	    printf("get_devices(): %s ($nr): '$dev' => '$uuid'\n", $STORAGE{$vm_name}{$controller_nr}{"CTRL"});
+	    $STORAGE{$vm_name}{$controller_nr}{"DEVS"}{$nr} = $dev.":".$uuid;
+
+	    $next_dev++;
+	}
+    }
+    close(CMD);
+}
+
+# ========================================================================================================
+
+# Fetch all iSCSI targets availible
+open(ISCSIADM, "iscsiadm -m node |")
+    || die("Can't open iscsiadm, $!\n");
+while(! eof(ISCSIADM)) {
+    $line = <ISCSIADM>;
+    chomp($line);
+
+    push(@targets, $line)
+}
+
+if($#targets < 0) {
+    print "No iSCSI targets availible.\n";
+    exit(1);
+}
+
+# Get list of VM's
+open(CMD, "$CMD list --long vms |")
+    || die ("Can't call VBoxManage list, $!\n");
+while(! eof(CMD) ) {
+    $line = <CMD>;
+    chomp($line);
+
+    if($line =~ /^Name:  /) {
+        $line =~ s/^Name:            //;
+
+	$vmname = $line;
+        $VMS{$vmname} = $vmname;
+
+	$controller = -1;
+    } elsif($line =~ /^State:  /) {
+        $line =~ s/.*  //;
+        $line =~ s/ \(.*//;
+
+        $line =~ s/running/On/;
+        $line =~ s/powered off/Off/;
+        $line =~ s/paused/Paused/;
+
+        $STATE{$vmname} = $line;
+    } elsif($line =~ /^Storage Controller Name/) {
+	$line =~ s/Storage Controller Name \(.*\):            //;
+
+	$controller++;
+
+	$STORAGE{$vmname}{$controller}{"CTRL"} = $line;
+#	print "STORAGE{$vmname}{$controller}{CTRL}: '".$STORAGE{$vmname}{$controller}{"CTRL"}."'\n";
+    } elsif($line =~ /^Storage Controller Max Port Count/) {
+	$line =~ s/Storage Controller Max Port Count \(.*\):  //;
+
+	$STORAGE{$vmname}{$controller}{"MAXPRT"} = $line;
+#	print "STORAGE{$vmname}{$controller}{MAXPRT}: '".$STORAGE{$vmname}{$controller}{"MAXPRT"}."'\n";
+    } elsif($line =~ /^Storage Controller Port Count/) {
+	$line =~ s/Storage Controller Port Count \(.*\):      //;
+
+	$STORAGE{$vmname}{$controller}{"PRTCNT"} = $line;
+#	print "STORAGE{$vmname}{$controller}{PRTCNT}: '".$STORAGE{$vmname}{$controller}{"PRTCNT"}."'\n";
+    } elsif($line =~ /^Storage Controller Bootable/) {
+	$line =~ s/Storage Controller Bootable \(.*\):        //;
+
+	$STORAGE{$vmname}{$controller}{"BOOT"} = $line;
+#	print "STORAGE{$vmname}{$controller}{PRTCNT}: '".$STORAGE{$vmname}{$controller}{"PRTCNT"}."'\n";
+    }
+}
+close(CMD);
+
+# ========================================================================================================
+
+# --------------------------------
+#if($ARGV[0] =~ /^l/i) {
+#    $EXIT=0;
+#    goto bye;
+#} elsif($#ARGV == 1) {
+#    $cmd = $ARGV[0];
+#} else {
+    # -----
+    # Choose what to do with the VM (Start, Stop, Pause)
+    print "Requires that a VM is in the state 'off'\n";
+    print "Command: [A]dd target to host, [D]elete target from host or [Q]uit? ";
+    $cmd = <STDIN>;
+    chomp($cmd);
+#}
+
+# --------------------------------
+# Get command
+if($cmd =~ /^a/i) {    $cmd="Add"; }
+elsif($cmd =~ /^d/i) { $cmd="Delete"; }
+else {
+    print "No such command!\n";
+    exit(0);
+}
+
+# ========================================================================================================
+
+if($cmd eq "Add") { 
+    # ADD TARGET TO HOST
+    # ================================ TARGET
+
+    # --------------------------------
+    # Output list of targets
+    for($i=0; $targets[$i]; $i++) {
+	# Setup a VM list, sorted by name
+	$ISCSI_TARGETS{$targets[$i]} = $targets[$i];
+#	print "ISCSI_TARGETS{".$targets[$i]."}: '".$ISCSI_TARGETS{$targets[$i]}."'\n";
+    }
+    $i=1;
+    foreach $target (sort keys %ISCSI_TARGETS) {
+	$TARGETS{$i} = $target;
+
+	printf("%3d: %-30s\n", $i, $target);
+	$i++;
+    }
+
+    # --------------------------------
+    # Choose target
+    print "Which target to add? ";
+    $target_nr = <STDIN>;
+    chomp($target_nr);
+    print "\n";
+
+    # --------------------------------
+    # Separate server and target
+    ($target_server, $target_name) = split(" ", $TARGETS{$target_nr});
+    $target_server =~ s/,.*//;
+
+    &get_machine_name();
+
+    # --------------------------------
+    for($i=0; $STORAGE{$vm_name}{$i}{"CTRL"}; $i++) {
+	if(($STORAGE{$vm_name}{$i}{"BOOT"} == 'on') &&
+	   ($STORAGE{$vm_name}{$i}{"MAXPRT"} > $STORAGE{$vm_name}{$i}{"PRTCNT"}))
+	{
+	    push(@STOR, $i);
+#	    printf("=> %d:%s\n", $i, $STORAGE{$vm_name}{$i}{"CTRL"});
+	}
+    }
+
+    if($#STOR < 0) {
+	if($cmd eq 'Add') {
+	    print "No bootable controller with room for additions.\n";
+	    exit(1);
+
+	    # TODO: Add a controller
+	}
+    } elsif($#STOR > 0) {
+	if($cmd eq "Add") {
+	    # More than one - select
+	    for($i=0; $STORAGE{$vm_name}{$i}{"CTRL"}; $i++) {
+		printf("%0.3d: %s\n", $i, $STORAGE{$vm_name}{$i}{"CTRL"});
+	    }
+
+	    print "Which storage controller would you like to add it to";
+	    $controller_nr = <STDIN>;
+	    chomp($controller_nr);
+	}
+    } else {
+	# Only one - take it.
+	$controller_nr = $STOR[$j];
+    }
+    $controller_name = $STORAGE{$vm_name}{$controller_nr}{"CTRL"};
+
+    &get_devices();
+}
+
+use Data::Dumper;
+if($cmd eq "Delete") {
+    # REMOVE TARGET FROM HOST
+
+    &get_machine_name();
+
+    print "\n";
+    for($i=0, $j=1; $STORAGE{$vm_name}{$i}{"CTRL"}; $i++) {
+	$controller_nr = $i;
+	&get_devices();
+
+	%devs = %{$STORAGE{$vm_name}{$i}{"DEVS"}};
+	foreach $dev (sort keys %devs) {
+	    next if($devs{$dev} =~ /^Empty/);
+
+	    ($device, $uuid) = split(":", $devs{$dev});
+	    push(@DEVS, "$i:$dev:$uuid");
+	    printf("%3d: %-30s\n", $j, $device);
+
+	    $j++;
+	}
+    }
+    printf("Delete what device/target [1-%d]? ", $j-1);
+    $device_nr = <STDIN>;
+    chomp($device_nr);
+    $device_nr--;
+
+    ($controller_nr, $dev, $uuid) = split(":", $DEVS[$device_nr]);
+    $controller_name = $STORAGE{$vm_name}{$controller_nr}{"CTRL"};
+}
+
+# ========================================================================================================
+
+if(($cmd eq "Add") && $vm_name && $target_server && $target_name && $controller_name && $next_dev) {
+    # VBoxManage storageattach "Nexenta CP 1.0.1" --storagectl "SATA Controller" \
+    #	--port 5 --type hdd --medium iscsi --server 192.168.69.8:3260 \
+    #	--target iqn.2011-12.com.bayour:storage.nexenta.cp1 --lun 0
+    $cmd  = "$CMD storageattach \"$vm_name\" --storagectl \"$controller_name\" ";
+    $cmd .= "--port $next_dev --type hdd --medium iscsi --server $target_server ";
+    $cmd .= "--target $target_name --lun 0";
+    print "CMD: '$cmd'\n";
+} elsif(($cmd eq "Delete") && $vm_name && $controller_name && $uuid) {
+    # VBoxManage storageattach "Nexenta CP 1.0.1" --storagectl "SATA Controller" \
+    #	--port 5 --medium none
+    $cmd  = "$CMD storageattach \"$vm_name\" --storagectl \"$controller_name\" ";
+    $cmd .= "--port $next_dev --medium none";
+    print "CMD: '$cmd'\n";
+
+    # VBoxManage closemedium disk 3ea0790b-8631-4715-9c93-cac4a0eb78da
+    $cmd  = "$CMD closemedium disk $uuid ";
+    print "CMD: '$cmd'\n";
+}
+
