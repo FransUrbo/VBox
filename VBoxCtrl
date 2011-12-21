@@ -2,9 +2,19 @@
 
 # $Id: VBoxCtrl,v 1.2 2011-11-15 18:25:57 turbo Exp $
 
+$| = 1;
+
+END {
+    unlink($TMPFILE);
+}
+
 $CMD = "/usr/bin/VBoxManage -nologo";
 $TMPFILE = `tempfile -d /tmp -p vbox.`; chomp($TMPFILE);
 $OUT = "> $TMPFILE 2>&1";
+
+undef($ENV{'LANGUAGE'});
+undef($ENV{'LC_ALL'});
+undef($ENV{'LANG'});
 
 sub output_log() {
     return if($OUT eq '');
@@ -17,8 +27,6 @@ sub output_log() {
 	print $line;
     }
     close(LOG);
-
-    unlink($TMPFILE);
 }
 
 # Unplugg all virtual CPUs
@@ -183,8 +191,50 @@ if($VMS{$name}) {
     # -----
     # STOP a VM
     } elsif($cmd eq 'Stop' ) {
-        if($STATE{$name} eq 'On' || $STATE{$name} eq 'unknown' || $STATE{$name} eq 'Paused') {
-            system("$CMD controlvm '$name' poweroff $OUT");
+        if($STATE{$name} eq 'On' || $STATE{$name} eq 'unknown' || 
+           $STATE{$name} eq 'Paused' || $STATE{$name} eq 'aborted')
+        {
+            print "Sending power down to '$name'... ";
+            system("$CMD controlvm '$name' acpipowerbutton $OUT");
+            print "done.\n";
+
+            $count = 0; $success = 0;
+
+            print "Waiting for VM to shutdown (max 30s)";
+            while(($count <= 5) && !$success) {
+                sleep(5);
+                print ".";
+
+                open(CMD, "$CMD showvminfo '$name' |")
+                    || die("Can't call VBoxManage, $!\n");
+                while(!eof(CMD) && !$success) {
+                    $line = <CMD>;
+                    chomp($line);
+
+                    if($line =~ /^State:  /) {
+                        $line =~ s/.*  //;
+                        $line =~ s/ \(.*//;
+
+                        if($line =~ /powered off/) {
+                            print " done.\n";
+                            
+                            $count = 5;
+                            $success = 1;
+                            last;
+                        }
+                    }
+                }
+                close(CMD);
+
+                $count++;
+            }
+
+            if(!$success) {
+                print "FAILED! Forcing off and hoping for the best.\n";
+                system("$CMD controlvm '$name' poweroff $OUT");
+            }
+
+            goto bye;
         } else {
             print "VM not running...\n";
 	    $EXIT=0;
@@ -194,20 +244,23 @@ if($VMS{$name}) {
     # -----
     # RESTART a VM
     } elsif($cmd eq 'Restart') {
-        if($STATE{$name} eq 'On' || $STATE{$name} eq 'unknown' || $STATE{$name} eq 'Paused' ||
-	    $STATE{$name} eq 'guru meditation') {
-            if(! system("$CMD controlvm '$name' reset $OUT")) {
+        if($STATE{$name} eq 'On' || $STATE{$name} eq 'unknown' || 
+           $STATE{$name} eq 'Paused' || $STATE{$name} eq 'guru meditation')
+        {
+            print "Powering down '$name'... ";
+            if($STATE{$name} eq 'On') {
+                system("$CMD controlvm '$name' acpipowerbutton $OUT");
+            } elsif(! system("$CMD controlvm '$name' reset $OUT")) {
 		# Couldn't just reset it...
-                print "Powering down '$name'... ";
 		system("$CMD controlvm '$name' poweroff $OUT");
-                print "done.\n";
+            }
+            print "done.\n";
 
-                sleep(2);
+            sleep(2);
 
-                print "Starting '$name'... ";
-		system("$CMD startvm '$name' -type headless $OUT");
-                print "done.\n";
-	    }
+            print "Starting '$name'... ";
+            system("$CMD startvm '$name' -type headless $OUT");
+            print "done.\n";
         } else {
             print "VM not running...\n";
 	    $EXIT=0;
@@ -345,5 +398,4 @@ if($VMS{$name}) {
 }
 
 bye:
-    unlink($TMPFILE);
     exit($EXIT);
