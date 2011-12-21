@@ -1,0 +1,315 @@
+#!/bin/bash -p
+#-#COM
+#-#COM NAME: cloneVB.sh - copy a virtualbox virtual machine
+#-#COM       http://www.chauviere.org/etc/php/DisplayPageHtml.php?f=/jr/pages/Tech/shell/cloneVB.xml
+#-#COM
+#-#COM SYNOPSYS:
+#-#COM     cloneVB.sh --model vmorig [--copy vmnew]
+#-#COM     cloneVB.sh vmorig vmnew
+#-#COM     * If vmnew is not specified, 'copy' will be suffixed to the vmorig name.
+#-#COM
+#-#COM DESCRIPTION:
+#-#COM     cloneVB.sh clones a VirtualBox virtual machine
+#-#COM     doing a copy of the data virtual disk (vdi file)
+#-#COM     as well as a copy of the setting of the virtual machine
+#-#COM
+#-#COM     In the Virtual machine, before you launch the original
+#-#COM     launch the new one and modify some setting that have
+#-#COM     to be unique on your network :
+#-#COM     + the nodename of the machine
+#-#COM     + eventually any static IP addresse
+#-#COM
+#-#COM PRE-REQUISITES:
+#-#COM     VirtualBox must be installed !
+#-#COM
+#-#COM BUGS:
+#-#COM     It works for me. Waiting for your report.
+#-#COM
+#-#COM QUESTION:
+#-#COM     Why sun/innotek didn't wrote it before ?
+#-#COM
+#-#COM AUTHOR:
+#-#COM     CHAUVIERE Jean-Raymond, Antony, 2008
+#-#COM     Turbo Fredrisson, 2009
+#-#COM
+#-#COM DATE:
+#-#COM     30/03/2009
+#-#COM
+#-#COM NOTES:
+#-#COM     Changes by Turbo:
+#-#COM     * Accept spaces in VM name
+#-#COM     * Better command line argument parsing
+#-#COM     * Support for cloning muliple VDI's
+#-#COM     * Support for VRDP port (+1 from original VM)
+#-#COM     * Support for generating and changing MAC address
+#-#COM
+
+set -e #-x
+
+# ------------------------------------------
+# INIT ET DEFAUTS
+# ------------------------------------------
+
+me=${0##*/}
+usage="Usage: $me [<-m|--model|-model>] source [<-c|--copy|-copy> destination]"
+cmd="VBoxManage -nologo"
+
+# ------------------------------------------
+# FONCTIONS DE SERVICE
+# ------------------------------------------
+
+function die {
+	echo "$me: $*" >&2
+	echo "$usage" >&2
+	exit 5
+}
+
+function help {
+	sed -n '/^#-#COM/s/#-#COM//p' $(which $0)
+
+}
+
+# ------------------------------------------
+# ARGUMENTS
+# ------------------------------------------
+
+TEMP=`getopt -o m:c:h --long model,copy,help --alternative -- "$@"`
+eval set -- "$TEMP"
+
+[[ $# -lt 1 ]] && die "missing args"
+while true; do
+    case "$1" in
+        -m|--model|-model) model="$2" ; shift 2 ;;
+        -c|--copy|-copy)   copy="$2" ; shift 2 ;;
+        -h|--help|-help)   help ; exit ;;
+        --) shift
+            if [ -n "$1" ]; then
+                model="$1"
+            fi
+            shift
+            break
+            ;;
+        *)  die "Unknown option '$*'" ;;
+    esac
+done
+
+[[ _$model = _ ]] && die "arg model is empty"
+[[ _$copy = _ ]] && if echo "$model" | grep -q " "; then copy="$model - Copy"; else copy="$model-copy"; fi
+
+# ------------------------------------------
+# VARIABLES APPLICATION
+# ------------------------------------------
+
+dmodel="$HOME/.VirtualBox/Machines/$model"
+dcopy="$HOME/.VirtualBox/Machines/$copy"
+
+# ------------------------------------------
+# FONCTIONS APPLICATIVES
+# ------------------------------------------
+
+function noDVdrive {
+	cat "$1/$2" | perl -e '
+	$content="" ;
+	{
+	$/=undef ;
+	$content=<>
+	}
+	$content =~ s,<DVDDrive passthrough="false">.*</DVDDrive>,<DVDDrive passthrough="false"/>,imsg ;
+	$content =~ s,<HardDiskAttachments>.*</HardDiskAttachments>,<HardDiskAttachments/>,imsg ;
+	print $content ;
+	' > "$1/ttno"
+	mv "$1/ttno" "$1/$2"
+}
+function showVMInfo {
+	$cmd showvminfo "$1" -machinereadable | grep -E "$2"
+}
+function modifyVM {
+	vm=$1 ; shift
+        opt=$1 ; shift
+	$cmd modifyvm "$vm" $opt "$*"
+        echo -n "."
+}
+function generateMAC {
+	# Author: Haydn Solomon 
+	# http://www.linux-kvm.com/content/tip-how-get-maximum-network-performance-using-paravirtual-drivers-and-bridged-networking
+	#
+	# NOTE: The 080027 MAC prefix belongs to VirtualBox !!
+	python -c "
+import random
+mac = [ 0x08, 0x00, 0x27,
+        random.randint(0x00, 0x7f),
+        random.randint(0x00, 0xff),
+        random.randint(0x00, 0xff) ]
+print ''.join(map(lambda x: '%02x' % x, mac))"
+}
+function createVM {
+	echo -n "Creating VM: "
+
+	# Create and register VM
+	copyUID=`$cmd createvm -name "$copy" -register | \
+            grep '^UUID: ' | \
+            sed 's@.*: @@'`
+        echo -n "."
+
+        # Get UUID of original VM
+	modelUID=`showVMInfo "$model" '^UUID=' | sed -e 's@.*=@@' -e 's@"@@g'` ; echo -n "."
+        
+
+        # Prepare to modify config by unregistering VM
+	$cmd unregistervm "$copy" ; echo -n "."
+
+        # Modify config
+	[ -f "$dcopy/$copy.orig" ] || (cp "$dcopy/$copy.xml" "$dcopy/$copy.orig" ; echo -n ".")
+	cp "$dmodel/$model.xml" "$dcopy/$copy.xml" ; echo -n "."
+        
+        # Set the UUID
+	sed -n -e "s/$modelUID/$copyUID/" \
+            -e "s/name=\"$model\"/name=\"$copy\"/g" \
+            -e p \
+            "$dcopy/$copy.xml" >"$dcopy/tt3"
+	mv "$dcopy/tt3" "$dcopy/$copy.xml"
+        echo -n "."
+
+	noDVdrive "$dcopy" "$copy.xml" ; echo -n "."
+
+        # Re-register the VM with modified config
+	$cmd registervm  "$dcopy/$copy.xml" ; echo -n "."
+
+        # If we successfully created the VM, delete the config copy
+	[ -f "$dcopy/$copy.orig" ] || (rm "$dcopy/$copy.orig" ; echo -n ".")
+
+        echo
+}
+
+# ------------------------------------------
+# MAIN
+# ------------------------------------------
+
+function main {
+	# VM and setting
+        createVM
+
+	# DISK management
+        echo -n "Cloning image(s): "
+        sata_enabled=0 ; increase_sata_port=0
+        showVMInfo "$model" '^hd[abd]=.*/|^sataport[0-9].*/' | while read vdi_org; do \
+            set -- `echo "$vdi_org" | sed -e 's@=@ @' -e 's@"@@g'`
+            port="$1" ; shift ; image="$*"
+            echo -n "."
+
+            if echo "$port" | grep -q '^sata'; then
+                if [ "$sata_enabled" -eq "0" ]; then
+                    modifyVM "$copy" -sata on
+                    sata_enabled=1
+                fi
+
+                # <klaus-vb> in the command line everything is consistently numbered starting with 1.
+                # <klaus-vb> FransUrbo: gui uses 0-29 numbering, command line uses 1-30
+                # [i.e. - this is not a bug!]
+                [ "$port" == 'sataport0' ] && increase_sata_port=1
+                if [ "$increase_sata_port" -eq '1' ]; then
+                    nr=`echo $port | sed 's@sataport@@'` # old port nr
+                    port=sataport`expr $nr + 1`
+                fi
+            fi
+            echo -n "."
+
+            # Generate a new disk/image file name
+            # NOTE: This isn't perfect, but works for me:
+	    #   [celia.pts/4]$ VBoxManage showvminfo "Windows Vista" -machinereadable | grep ^sata
+	    #   sata="on"
+	    #   sataport0="/home/turbo/.VirtualBox/Machines/Windows Vista/Windows Vista - Disk 1.vdi"
+            #
+            #   [celia.pts/4]$ VBoxManage showvminfo "Nexenta CP 1.0.1" -machinereadable | grep ^sata
+	    #   sata="on"
+	    #   sataport0="/home/turbo/.VirtualBox/Machines/Nexenta CP 1.0.1/Snapshots/{cdf2dd0e-6c24-4483-a483-5fdf628ad911}.vdi"
+	    #   sataport1="/home/turbo/.VirtualBox/Machines/Nexenta CP 1.0.1/Snapshots/{03e20cd8-de55-4bc0-a0c6-4ee1309409fd}.vdi"
+	    #   sataport2="/home/turbo/.VirtualBox/Machines/Nexenta CP 1.0.1/Snapshots/{b1586da2-43db-44e1-9a7a-9155a94acbf4}.vdi"
+	    #   sataport3="/home/turbo/.VirtualBox/Machines/Nexenta CP 1.0.1/Snapshots/{473a30de-2cde-45d0-9313-0474a5f9e918}.vdi"
+	    #   sataport4="/home/turbo/.VirtualBox/Machines/Nexenta CP 1.0.1/Snapshots/{f9502ba0-5f69-4c33-b138-4cc9a0ad7c7d}.vdi"
+            if echo "$image" | grep -q " "; then
+                dsk="$copy - Disk $sp"
+            else
+                dsk="$copy_disk-$sp"
+            fi
+            vdi_new=`echo "$image" | sed -e "s@$model@$copy@g" -e "s@/Snapshot.*\}@/$dsk@"`
+            echo -n "."
+
+            # Clone, register and add image
+            $cmd clonehd "$image" "$vdi_new" -remember > /dev/null ; echo -n "."
+            [ "$?" -gt 1 ] && (echo ; echo "Failed to clone '$image'!" ; exit 1)
+            modifyVM "$copy" -$port "$vdi_new"
+
+            sp=`expr $sp + 1`
+        done
+
+        # Get some values that we need to change
+        eval `showVMInfo "$copy" 'vrdp=|^vrdpport=|^macaddress[1-9].*='`
+        echo -n "."
+
+        # Change the RDP port (if set in original VM)
+        vrdp_enabled=0
+        if [ "$vrdp" == "on" -a -n "$vrdpport" ]; then
+            vrdpport=`expr $vrdpport + 1`
+            modifyVM "$copy" -vrdpport $vrdpport
+
+            vrdp_enabled=1
+        fi
+
+        # Change MAC adress(es)
+        env | grep ^macaddress | while read line; do
+            opt=`echo "$line" | sed 's@=.*@@'`
+            mac=`generateMAC`
+            modifyVM "$copy" $opt "$mac"
+        done
+
+        # Get the/any DVD connected
+	eval `showVMInfo "$model" '^dvd='`
+        [ -n "$dvd" ] && modifyVM "$copy" -dvd "$dvd"
+
+        # Done...
+        echo
+        echo "Done with clone. Make sure to change the hostname and IP address (if static)"
+        echo "in the guest - this is the only thing that we can't do from here..."
+        if [ "$vrdp_enabled" -eq "1" ]; then
+            echo
+            echo "The new VM will listen on RDP port: $vrdpport"
+        fi
+        echo
+        echo -n "Start the new VM [Y/n]? "
+        read start
+        if echo $start | grep -i '^n'; then
+            exit 0
+        else
+            $cmd startvm "$copy" -type vrdp
+        fi
+
+        exit 0
+}
+
+# ------------------------------------------
+# MAIN CODE
+# ------------------------------------------
+
+if [ ! -d "$dmodel" ]; then
+    echo "Source VM '$model' does not exists!"
+    help
+    exit 1
+fi
+
+if [ -d "$dcopy" ]; then
+    echo -n "Destination VM '$copy' already exists. Overwrite [y/N] "
+    read answer
+    if ! echo "$answer" | grep -qi '^y'; then
+        echo "exiting..."
+        exit 0
+    fi
+fi
+
+eval `showVMInfo "$model" '^VMState='`
+if [ "$VMState" != "poweroff" ]; then
+    echo "Can't clone a running/paused VM!"
+    exit 1
+fi
+
+main
