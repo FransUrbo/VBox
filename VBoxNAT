@@ -1,0 +1,62 @@
+#!/bin/sh
+
+# http://www.virtualbox.org/wiki/Advanced_Networking_Linux
+
+set -e
+
+USER=turbo
+NUMBER_OF_VM=10
+
+case "$1" in
+    start)
+        # create the bridge
+        brctl addbr br0
+
+        # create the taps and insert them into the bridge
+        NB=0
+        while [ $NB -lt $NUMBER_OF_VM ]; do
+            tunctl -t tap$NB -u $USER
+            ip link set up dev tap$NB
+            brctl addif br0 tap$NB
+            let NB=$NB+1
+        done
+
+        # set the IP address and routing
+        ip link set up dev br0
+        ip addr add 192.168.4.1/24 dev br0
+        ip route add 192.168.4.0/24 dev br0
+
+        # setup NAT forwarding
+        echo 1 > /proc/sys/net/ipv4/ip_forward
+        iptables -A FORWARD -i eth0 -o br0 -j ACCEPT
+        iptables -A FORWARD -i br0 -o eth0 -j ACCEPT
+        iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+        ;;
+
+    stop)
+        # disable forwarding
+        echo 0 > /proc/sys/net/ipv4/ip_forward
+        echo 1 > /proc/sys/net/ipv4/ip_dynaddr
+        iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
+        iptables -D FORWARD -i br0 -o eth0 -j ACCEPT
+        iptables -D FORWARD -i eth0 -o br0 -j ACCEPT
+
+        # disable IP address and routing
+        ip route del 192.168.4.0/24 dev br0
+        ip addr del 192.168.4.1/24 dev br0
+        ip link set down  dev br0
+
+        # remove the taps
+        NB=0
+        while [ $NB -lt $NUMBER_OF_VM ]; do
+            ip link set down dev tap$NB
+        done
+
+        # remove the bridge
+        brctl delbr br0
+        ;;
+
+    *)
+        echo "Usage: $0 {start|stop}"
+        exit 1
+esac
