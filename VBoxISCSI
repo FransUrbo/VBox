@@ -21,6 +21,16 @@ sub output_log() {
     unlink($TMPFILE);
 }
 
+sub run() {
+    my($cmd) = shift;
+    print "CMD: '$cmd'\n";
+
+    if(system("$cmd $OUT")) {
+	&output_log();
+	exit(1);
+    }
+}
+
 sub get_machine_name() {
     # --------------------------------
     # Output list of VM's (with current state)
@@ -159,6 +169,10 @@ while(! eof(CMD) ) {
 
 	$STORAGE{$vmname}{$controller}{"BOOT"} = $line;
 #	print "STORAGE{$vmname}{$controller}{PRTCNT}: '".$STORAGE{$vmname}{$controller}{"PRTCNT"}."'\n";
+    } elsif($line =~ /Controller.*\|iqn\.[0-9].*:.*UUID.*/) {
+	$line =~ s/.*[0-9]\): (.*) \(UUID.*/$1/;
+
+	push(@EXISTING_TARGETS, $line);
     }
 }
 close(CMD);
@@ -202,16 +216,38 @@ if($cmd eq "Add") {
 	$ISCSI_TARGETS{$targets[$i]} = $targets[$i];
 #	print "ISCSI_TARGETS{".$targets[$i]."}: '".$ISCSI_TARGETS{$targets[$i]}."'\n";
     }
-    $i=1;
+
+    $i=1; $existing_targets = 0;
     foreach $target (sort keys %ISCSI_TARGETS) {
 	$TARGETS{$i} = $target;
 
-	printf("%3d: %-30s\n", $i, $target);
+	$mark = ' ';
+
+	# Setup for check
+	($srv, $iqn) = split(" ", $target);
+	$srv =~ s/,.*//;
+	$src_targ = "$iqn";
+
+	# Already used?
+	if($target =~ /iqn\.[0-9].*:.*/) {
+	    for($k=0; $EXISTING_TARGETS[$k]; $k++) {
+		$dst_targ = $EXISTING_TARGETS[$k];
+		$dst_targ =~ s/.*\|//;
+
+		if($dst_targ eq $src_targ) {
+		    $mark = '*';
+		    $existing_targets++;
+		}
+	    }
+	}
+
+	printf("%3d:$mark %-30s\n", $i, $target);
 	$i++;
     }
 
     # --------------------------------
     # Choose target
+    print "* => Already attached to host\n" if($existing_targets);
     print "Which target to add? ";
     $target_nr = <STDIN>;
     chomp($target_nr);
@@ -261,7 +297,6 @@ if($cmd eq "Add") {
     &get_devices();
 }
 
-use Data::Dumper;
 if($cmd eq "Delete") {
     # REMOVE TARGET FROM HOST
 
@@ -301,16 +336,19 @@ if(($cmd eq "Add") && $vm_name && $target_server && $target_name && $controller_
     $cmd  = "$CMD storageattach \"$vm_name\" --storagectl \"$controller_name\" ";
     $cmd .= "--port $next_dev --type hdd --medium iscsi --server $target_server ";
     $cmd .= "--target $target_name --lun 0";
-    print "CMD: '$cmd'\n";
+    print "Adding '$target_name' to '$vm_name'\n";
+    &run("$cmd");
 } elsif(($cmd eq "Delete") && $vm_name && $controller_name && $uuid) {
     # VBoxManage storageattach "Nexenta CP 1.0.1" --storagectl "SATA Controller" \
     #	--port 5 --medium none
     $cmd  = "$CMD storageattach \"$vm_name\" --storagectl \"$controller_name\" ";
     $cmd .= "--port $next_dev --medium none";
-    print "CMD: '$cmd'\n";
+    print "Removing '".$STORAGE{$vm_name}{$controller_nr}{"CTRL"}."' from '$vm_name'\n";
+    &run("$cmd");
 
     # VBoxManage closemedium disk 3ea0790b-8631-4715-9c93-cac4a0eb78da
     $cmd  = "$CMD closemedium disk $uuid ";
-    print "CMD: '$cmd'\n";
+    print "Removing '".$STORAGE{$vm_name}{$controller_nr}{"CTRL"}."'\n";
+    &run("$cmd");
 }
 
