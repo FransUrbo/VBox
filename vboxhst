@@ -7,6 +7,11 @@ CACHE=/var/cache/vbox/vms
 
 case "$1" in
     start) 
+        renice 5 $$
+	/etc/init.d/open-iscsi start
+	iscsiadm -m discovery -t st -p 192.168.69.8
+	iscsiadm -m node -L all
+
         if [ -f $CACHE ]; then
             echo "Starting VM: "
             cat $CACHE | \
@@ -38,6 +43,9 @@ case "$1" in
                 echo -n "'$host' "
                 /usr/bin/VBoxManage -nologo controlvm "$host" savestate
             done
+
+	iscsiadm -m node -u all
+	/etc/init.d/open-iscsi stop
         ;;
 
     forcequit)
@@ -48,6 +56,10 @@ case "$1" in
                 echo "* $host: "
                 /usr/bin/VBoxManage -nologo controlvm "$host" poweroff
             done
+
+
+	iscsiadm -m node -u all
+	/etc/init.d/open-iscsi stop
         ;;
 
     *)
