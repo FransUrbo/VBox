@@ -101,7 +101,7 @@ sub get_devices() {
 	    }
 
 #	    printf("get_devices(): %s ($nr): '$dev' => '$uuid'\n", $STORAGE{$vm_name}{$controller_nr}{"CTRL"});
-	    $STORAGE{$vm_name}{$controller_nr}{"DEVS"}{$nr} = $dev.":".$uuid;
+	    $STORAGE{$vm_name}{$controller_nr}{"DEVS"}{$nr} = $dev."|".$uuid;
 
 	    $next_dev++;
 	}
@@ -313,7 +313,15 @@ if($cmd eq "Delete") {
 	foreach $dev (sort keys %devs) {
 	    next if($devs{$dev} =~ /^Empty/);
 
-	    ($device, $uuid) = split(":", $devs{$dev});
+	    @tmp = split(/\|/, $devs{$dev}, 3);
+	    if($tmp[2]) {
+		$server = $tmp[0];
+		$device = $tmp[1];
+		$uuid   = $tmp[2];
+	    } else {
+		$device = $tmp[0];
+		$uuid   = $tmp[1];
+	    }
 	    push(@DEVS, "$i:$dev:$uuid");
 	    printf("%3d: %-30s\n", $j, $device);
 
@@ -327,6 +335,8 @@ if($cmd eq "Delete") {
 
     ($controller_nr, $dev, $uuid) = split(":", $DEVS[$device_nr]);
     $controller_name = $STORAGE{$vm_name}{$controller_nr}{"CTRL"};
+
+    $next_dev--; # get_devices() is increasing the value, which is fine in 'Add', but not 'Delete'.
 }
 
 # ========================================================================================================
