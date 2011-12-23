@@ -6,6 +6,7 @@ END {
     unlink($TMPFILE);
 }
 
+$DEBUG = 0;
 $CMD = "/usr/bin/VBoxManage -nologo";
 $TMPFILE = `tempfile -d /tmp -p vbox.`; chomp($TMPFILE);
 $OUT = "> $TMPFILE 2>&1";
@@ -25,15 +26,20 @@ sub output_log() {
 
 sub run() {
     my($cmd) = shift;
-    print "CMD: '$cmd'\n";
 
-    if(system("$cmd $OUT")) {
-	&output_log();
-	exit(1);
+    if($DEBUG == 1) {
+	print "CMD: '$cmd'\n";
+    } else {
+	if(system("$cmd $OUT")) {
+	    &output_log();
+	    exit(1);
+	}
     }
 }
 
 sub get_machine_name() {
+    system("/usr/bin/clear");
+
     # --------------------------------
     # Output list of VM's (with current state)
     $i = 1;
@@ -109,75 +115,65 @@ sub get_devices() {
     close(CMD);
 }
 
-# ========================================================================================================
+sub get_vms() {
+    undef %VMS;
+    undef %STATE;
+    undef %STORAGE;
+    undef @EXISTING_TARGETS;
 
-# Fetch all iSCSI targets availible
-open(ISCSIADM, "iscsiadm -m node |")
-    || die("Can't open iscsiadm, $!\n");
-while(! eof(ISCSIADM)) {
-    $line = <ISCSIADM>;
-    chomp($line);
+    # Get list of VM's
+    open(CMD, "$CMD list --long vms |")
+	|| die ("Can't call VBoxManage list, $!\n");
+    while(! eof(CMD) ) {
+	$line = <CMD>;
+	chomp($line);
 
-    push(@targets, $line)
-}
+	if($line =~ /^Name:  /) {
+	    $line =~ s/^Name:            //;
 
-if($#targets < 0) {
-    print "No iSCSI targets availible.\n";
-    exit(1);
-}
+	    $vmname = $line;
+	    $VMS{$vmname} = $vmname;
 
-# Get list of VM's
-open(CMD, "$CMD list --long vms |")
-    || die ("Can't call VBoxManage list, $!\n");
-while(! eof(CMD) ) {
-    $line = <CMD>;
-    chomp($line);
+	    $controller = -1;
+	} elsif($line =~ /^State:  /) {
+	    $line =~ s/.*  //;
+	    $line =~ s/ \(.*//;
 
-    if($line =~ /^Name:  /) {
-        $line =~ s/^Name:            //;
+	    $line =~ s/running/On/;
+	    $line =~ s/powered off/Off/;
+	    $line =~ s/paused/Paused/;
 
-	$vmname = $line;
-        $VMS{$vmname} = $vmname;
+	    $STATE{$vmname} = $line;
+	} elsif($line =~ /^Storage Controller Name/) {
+	    $line =~ s/Storage Controller Name \(.*\):            //;
 
-	$controller = -1;
-    } elsif($line =~ /^State:  /) {
-        $line =~ s/.*  //;
-        $line =~ s/ \(.*//;
+	    $controller++;
 
-        $line =~ s/running/On/;
-        $line =~ s/powered off/Off/;
-        $line =~ s/paused/Paused/;
+	    $STORAGE{$vmname}{$controller}{"CTRL"} = $line;
+#	    print "STORAGE{$vmname}{$controller}{CTRL}: '".$STORAGE{$vmname}{$controller}{"CTRL"}."'\n";
+	} elsif($line =~ /^Storage Controller Max Port Count/) {
+	    $line =~ s/Storage Controller Max Port Count \(.*\):  //;
 
-        $STATE{$vmname} = $line;
-    } elsif($line =~ /^Storage Controller Name/) {
-	$line =~ s/Storage Controller Name \(.*\):            //;
+	    $STORAGE{$vmname}{$controller}{"MAXPRT"} = $line;
+#	    print "STORAGE{$vmname}{$controller}{MAXPRT}: '".$STORAGE{$vmname}{$controller}{"MAXPRT"}."'\n";
+	} elsif($line =~ /^Storage Controller Port Count/) {
+	    $line =~ s/Storage Controller Port Count \(.*\):      //;
 
-	$controller++;
+	    $STORAGE{$vmname}{$controller}{"PRTCNT"} = $line;
+#	    print "STORAGE{$vmname}{$controller}{PRTCNT}: '".$STORAGE{$vmname}{$controller}{"PRTCNT"}."'\n";
+	} elsif($line =~ /^Storage Controller Bootable/) {
+	    $line =~ s/Storage Controller Bootable \(.*\):        //;
 
-	$STORAGE{$vmname}{$controller}{"CTRL"} = $line;
-#	print "STORAGE{$vmname}{$controller}{CTRL}: '".$STORAGE{$vmname}{$controller}{"CTRL"}."'\n";
-    } elsif($line =~ /^Storage Controller Max Port Count/) {
-	$line =~ s/Storage Controller Max Port Count \(.*\):  //;
+	    $STORAGE{$vmname}{$controller}{"BOOT"} = $line;
+#	    print "STORAGE{$vmname}{$controller}{PRTCNT}: '".$STORAGE{$vmname}{$controller}{"PRTCNT"}."'\n";
+	} elsif($line =~ /Controller.*\|iqn\.[0-9].*:.*UUID.*/) {
+	    $line =~ s/.*[0-9]\): (.*) \(UUID.*/$1/;
 
-	$STORAGE{$vmname}{$controller}{"MAXPRT"} = $line;
-#	print "STORAGE{$vmname}{$controller}{MAXPRT}: '".$STORAGE{$vmname}{$controller}{"MAXPRT"}."'\n";
-    } elsif($line =~ /^Storage Controller Port Count/) {
-	$line =~ s/Storage Controller Port Count \(.*\):      //;
-
-	$STORAGE{$vmname}{$controller}{"PRTCNT"} = $line;
-#	print "STORAGE{$vmname}{$controller}{PRTCNT}: '".$STORAGE{$vmname}{$controller}{"PRTCNT"}."'\n";
-    } elsif($line =~ /^Storage Controller Bootable/) {
-	$line =~ s/Storage Controller Bootable \(.*\):        //;
-
-	$STORAGE{$vmname}{$controller}{"BOOT"} = $line;
-#	print "STORAGE{$vmname}{$controller}{PRTCNT}: '".$STORAGE{$vmname}{$controller}{"PRTCNT"}."'\n";
-    } elsif($line =~ /Controller.*\|iqn\.[0-9].*:.*UUID.*/) {
-	$line =~ s/.*[0-9]\): (.*) \(UUID.*/$1/;
-
-	push(@EXISTING_TARGETS, $line);
+	    push(@EXISTING_TARGETS, $line);
+	}
     }
+    close(CMD);
 }
-close(CMD);
 
 # ========================================================================================================
 
@@ -206,7 +202,28 @@ else {
 
 # ========================================================================================================
 
+# Fetch all iSCSI targets availible
+open(ISCSIADM, "iscsiadm -m node |")
+    || die("Can't open iscsiadm, $!\n");
+while(! eof(ISCSIADM)) {
+    $line = <ISCSIADM>;
+    chomp($line);
+
+    push(@targets, $line)
+}
+
+if($#targets < 0) {
+    print "No iSCSI targets availible.\n";
+    exit(1);
+}
+
+&get_vms();
+
+# ========================================================================================================
+
 if($cmd eq "Add") { 
+    system("/usr/bin/clear");
+
     # ADD TARGET TO HOST
     # ================================ TARGET
 
@@ -262,7 +279,15 @@ if($cmd eq "Add") {
     &get_machine_name();
 
     # --------------------------------
+start:
+    undef @STOR;
+
     for($i=0; $STORAGE{$vm_name}{$i}{"CTRL"}; $i++) {
+#	printf("STORAGE{$vm_name}{$i}{CTRL}: %s\n", $STORAGE{$vm_name}{$i}{"CTRL"});
+#	printf("  BOOT: %s\n", $STORAGE{$vm_name}{$i}{"BOOT"});
+#	printf("  MAXPRT: %s\n", $STORAGE{$vm_name}{$i}{"MAXPRT"});
+#	printf("  PRTCNT: %s\n", $STORAGE{$vm_name}{$i}{"PRTCNT"});
+
 	if(($STORAGE{$vm_name}{$i}{"BOOT"} == 'on') &&
 	   ($STORAGE{$vm_name}{$i}{"MAXPRT"} > $STORAGE{$vm_name}{$i}{"PRTCNT"}))
 	{
@@ -274,9 +299,22 @@ if($cmd eq "Add") {
     if($#STOR < 0) {
 	if($cmd eq 'Add') {
 	    print "No bootable controller with room for additions.\n";
-	    exit(1);
 
-	    # TODO: Add a controller
+	    # TODO: Get controller name
+	    $new_ctrl_no = 1;
+	    for($i=0; $STORAGE{$vm_name}{$i}{"CTRL"}; $i++) {
+		$new_ctrl_no++ if($STORAGE{$vm_name}{$i}{"CTRL"} =~ /^sata /i);
+	    }
+	    $new_controller_name = "SATA Controller $new_ctrl_no";
+	    print "Adding '$new_controller_name'\n";
+
+	    $cmd_line  = "$CMD storagectl '$vm_name' --name '$new_controller_name' ";
+	    $cmd_line .= "--add sata --sataportcount 1 --bootable on";
+	    &run("$cmd_line");
+
+	    &get_vms();
+
+	    goto start;
 	}
     } elsif($#STOR > 0) {
 	if($cmd eq "Add") {
