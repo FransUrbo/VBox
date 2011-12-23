@@ -120,7 +120,7 @@ if($ARGV[0] =~ /^l/i) {
     # -----
     # Choose what to do with the VM (Start, Stop, Pause)
     print "Command: [S]top, [P]ause, [R]un, Restar[t], S[n]apshot, [I]nfo,\n";
-    print "         [C]lone, (un)[H]otplug CPUs or [Q]uit? ";
+    print "         [C]lone, (un)[H]otplug CPUs, [F]orce stop or [Q]uit? ";
     $cmd = <STDIN>;
     chomp($cmd);
 }
@@ -134,6 +134,7 @@ if($cmd =~ /^p/i) {      $cmd="Pause";
 } elsif($cmd =~ /^t/i) { $cmd="Restart";
 } elsif($cmd =~ /^h/i) { $cmd="Hotplug";
 } elsif($cmd =~ /^c/i) { $cmd="Clone";
+} elsif($cmd =~ /^f/i) { $cmd="ForceStop";
 } elsif($cmd =~ /^q/i) { $EXIT=0; goto bye;
 } else {
     print "No such command!\n";
@@ -240,6 +241,13 @@ if($VMS{$name}) {
 	    $EXIT=0;
 	    goto bye;
         }
+
+    # -----
+    # Forcibly STOP a VM
+    } elsif($cmd eq 'ForceStop' ) {
+	$EXIT=0;
+	$EXIT=1 if(system("$CMD controlvm '$name' poweroff $OUT"));
+	goto bye;
 
     # -----
     # RESTART a VM
