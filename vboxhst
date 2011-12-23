@@ -10,7 +10,7 @@ case "$1" in
         renice 5 $$
 	/etc/init.d/open-iscsi start
 	iscsiadm -m discovery -t st -p 192.168.69.8
-	iscsiadm -m node -L all
+#	iscsiadm -m node -L all
 
         if [ -f $CACHE ]; then
             echo "Starting VM: "
@@ -44,7 +44,7 @@ case "$1" in
                 /usr/bin/VBoxManage -nologo controlvm "$host" savestate
             done
 
-	iscsiadm -m node -u all
+#	iscsiadm -m node -u all
 	/etc/init.d/open-iscsi stop
         ;;
 
