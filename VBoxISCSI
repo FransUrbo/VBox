@@ -190,7 +190,6 @@ close(CMD);
 #} else {
     # -----
     # Choose what to do with the VM (Start, Stop, Pause)
-    print "Requires that a VM is in the state 'off'\n";
     print "Command: [A]dd target to host, [D]elete target from host or [Q]uit? ";
     $cmd = <STDIN>;
     chomp($cmd);
@@ -347,7 +346,7 @@ if(($cmd eq "Add") && $vm_name && $target_server && $target_name && $controller_
     #	--target iqn.2011-12.com.bayour:storage.nexenta.cp1 --lun 0
     $cmd  = "$CMD storageattach \"$vm_name\" --storagectl \"$controller_name\" ";
     $cmd .= "--port $next_dev --type hdd --medium iscsi --server $target_server ";
-    $cmd .= "--target $target_name --lun 0";
+    $cmd .= "--target $target_name --lun 0"; # --mtype immutable";
     print "Adding '$target_name' to '$vm_name'\n";
     &run("$cmd");
 } elsif(($cmd eq "Delete") && $vm_name && $controller_name && $uuid) {
