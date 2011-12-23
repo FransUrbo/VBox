@@ -4,4 +4,4 @@ VBoxClone	Clone a VM (no longer maintained - use VBoxCtrl!)
 VBoxCtrl	Controll (start, stop, restart, snapshot, clone, hotplug CPUs) a VM
 VBoxISCSI	Add/Remove/Delete a iSCSI target from a VM
 VBoxNAT		Setup network NAT for use with VBox
-
+vboxhst		Init script to start previously suspended VM's (by a shutdown etc).
