@@ -58,6 +58,8 @@ while(! eof(CMD) ) {
     chomp($line);
 
     if($line =~ /^Name:  /) {
+	next if($line =~ /filter/i);
+
         $line =~ s/^Name:            //;
 
 	$name = $line;
