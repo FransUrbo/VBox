@@ -129,7 +129,10 @@ sub get_vms() {
 	chomp($line);
 
 	if($line =~ /^Name:  /) {
+	    next if($line =~ /filter/i);
+
 	    $line =~ s/^Name:            //;
+	    next if($line =~ /^\ /); # Most likley a USB filter.
 
 	    $vmname = $line;
 	    $VMS{$vmname} = $vmname;
@@ -186,7 +189,7 @@ sub get_vms() {
 #} else {
     # -----
     # Choose what to do with the VM (Start, Stop, Pause)
-    print "Command: [A]dd target to host, [D]elete target from host or [Q]uit? ";
+    print "Command: [A]dd target to host, [D]etach target from host or [Q]uit? ";
     $cmd = <STDIN>;
     chomp($cmd);
 #}
