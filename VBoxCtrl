@@ -61,6 +61,7 @@ while(! eof(CMD) ) {
 	next if($line =~ /filter/i);
 
         $line =~ s/^Name:            //;
+	next if($line =~ /^\ /); # Most likley a USB filter.
 
 	$name = $line;
         $VMS{$name} = $name;
