@@ -363,6 +363,7 @@ if($cmd eq "Delete") {
 		$uuid   = $tmp[1];
 	    }
 	    push(@DEVS, "$i:$dev:$uuid");
+	    push(@DEVNAMES, $device);
 	    printf("%3d: %-30s\n", $j, $device);
 
 	    $j++;
@@ -394,8 +395,8 @@ if(($cmd eq "Add") && $vm_name && $target_server && $target_name && $controller_
     # VBoxManage storageattach "Nexenta CP 1.0.1" --storagectl "SATA Controller" \
     #	--port 5 --medium none
     $cmd  = "$CMD storageattach \"$vm_name\" --storagectl \"$controller_name\" ";
-    $cmd .= "--port $next_dev --medium none";
-    print "Removing '".$STORAGE{$vm_name}{$controller_nr}{"CTRL"}."' from '$vm_name'\n";
+    $cmd .= "--port $dev --medium none";
+    print "Removing '".$DEVNAMES[$device_nr]."' from '$vm_name'\n";
     &run("$cmd");
 
     # VBoxManage closemedium disk 3ea0790b-8631-4715-9c93-cac4a0eb78da
