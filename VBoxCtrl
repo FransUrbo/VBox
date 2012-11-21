@@ -85,6 +85,11 @@ while(! eof(CMD) ) {
         $PORTS{$name} = $line;
     } elsif($line =~ /^VRDE:.*disabled/) {
         $PORTS{$name} = "disabled";
+
+    } elsif($line =~ /^Teleporter Enabled: /) {
+        $line =~ s/.*: //;
+
+        $TELEPORTER{$name} = $line;
     } elsif($line =~ /^Number of CPUs:/) {
 	$line =~ s/.* //;
 
@@ -169,7 +174,12 @@ if($VMS{$name}) {
         if($STATE{$name} eq 'Paused' ) {
             system("$CMD controlvm '$name' resume $OUT");
         } elsif(($STATE{$name} eq 'Off') or ($STATE{$name} eq 'saved')) {
-            system("$CMD startvm '$name' -type headless $OUT");
+	    if(($STATE{$name} eq 'Off') && ($TELEPORTER{$name} eq 'on')) {
+		system("$CMD startvm '$name' -type headless > /dev/null 2>&1 &");
+		goto bye;
+	    } else {
+		system("$CMD startvm '$name' -type headless $OUT");
+	    }
         } else {
             print "Already running...\n";
 	    $EXIT=0;
@@ -272,6 +282,23 @@ if($VMS{$name}) {
             print "Starting '$name'... ";
             system("$CMD startvm '$name' -type headless $OUT");
             print "done.\n";
+	} elsif($STATE{$name} eq 'aborted') {
+	    # Tricky!
+	    print "VM: '$name' is in Aborted state. Restarting might fail but trying anyway!\n";
+
+	    # 1. Find UUID of host.
+	    $uuid =  `$CMD list vms | egrep '^"$name"'`;
+	    $uuid =~ s/.*{(.*)}/$1/;
+	    print "uuid: $uuid\n";
+
+	    # 2. Run the VBoxHeadless command manually
+	    $cmd = "/usr/lib/virtualbox/VBoxHeadless --comment '$name' ";
+	    $cmd = "$cmd --startvm $uuid --vrde config > /dev/null 2>&1";
+
+	    if( ! fork() ) {
+		system($cmd);
+	    }
+	    print "done.\n";
         } else {
             print "VM not running...\n";
 	    $EXIT=0;
