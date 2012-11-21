@@ -129,10 +129,7 @@ sub get_vms() {
 	chomp($line);
 
 	if($line =~ /^Name:  /) {
-	    next if($line =~ /filter/i);
-
 	    $line =~ s/^Name:            //;
-	    next if($line =~ /^\ /); # Most likley a USB filter.
 
 	    $vmname = $line;
 	    $VMS{$vmname} = $vmname;
@@ -283,7 +280,7 @@ if($cmd eq "Add") {
 
     # --------------------------------
 start:
-    undef @STOR;
+    $STOR = 0;
 
     for($i=0; $STORAGE{$vm_name}{$i}{"CTRL"}; $i++) {
 #	printf("STORAGE{$vm_name}{$i}{CTRL}: %s\n", $STORAGE{$vm_name}{$i}{"CTRL"});
@@ -292,14 +289,15 @@ start:
 #	printf("  PRTCNT: %s\n", $STORAGE{$vm_name}{$i}{"PRTCNT"});
 
 	if(($STORAGE{$vm_name}{$i}{"BOOT"} == 'on') &&
-	   ($STORAGE{$vm_name}{$i}{"MAXPRT"} > $STORAGE{$vm_name}{$i}{"PRTCNT"}))
+	   (($STORAGE{$vm_name}{$i}{"MAXPRT"} > $STORAGE{$vm_name}{$i}{"PRTCNT"}) ||
+	    ($STORAGE{$vm_name}{$i}{"MAXPRT"} == $STORAGE{$vm_name}{$i}{"PRTCNT"})))
 	{
-	    push(@STOR, $i);
+	    $STOR++;
 #	    printf("=> %d:%s\n", $i, $STORAGE{$vm_name}{$i}{"CTRL"});
 	}
     }
 
-    if($#STOR < 0) {
+    if($STOR < 0) {
 	if($cmd eq 'Add') {
 	    print "No bootable controller with room for additions.\n";
 
@@ -319,20 +317,20 @@ start:
 
 	    goto start;
 	}
-    } elsif($#STOR > 0) {
+    } elsif($STOR > 0) {
 	if($cmd eq "Add") {
 	    # More than one - select
 	    for($i=0; $STORAGE{$vm_name}{$i}{"CTRL"}; $i++) {
-		printf("%0.3d: %s\n", $i, $STORAGE{$vm_name}{$i}{"CTRL"});
+		printf("%d: %s\n", $i, $STORAGE{$vm_name}{$i}{"CTRL"});
 	    }
 
-	    print "Which storage controller would you like to add it to";
+	    print "Which storage controller would you like to add it to? ";
 	    $controller_nr = <STDIN>;
 	    chomp($controller_nr);
 	}
     } else {
 	# Only one - take it.
-	$controller_nr = $STOR[$j];
+	$controller_nr = 1;
     }
     $controller_name = $STORAGE{$vm_name}{$controller_nr}{"CTRL"};
 
@@ -363,7 +361,6 @@ if($cmd eq "Delete") {
 		$uuid   = $tmp[1];
 	    }
 	    push(@DEVS, "$i:$dev:$uuid");
-	    push(@DEVNAMES, $device);
 	    printf("%3d: %-30s\n", $j, $device);
 
 	    $j++;
@@ -395,8 +392,8 @@ if(($cmd eq "Add") && $vm_name && $target_server && $target_name && $controller_
     # VBoxManage storageattach "Nexenta CP 1.0.1" --storagectl "SATA Controller" \
     #	--port 5 --medium none
     $cmd  = "$CMD storageattach \"$vm_name\" --storagectl \"$controller_name\" ";
-    $cmd .= "--port $dev --medium none";
-    print "Removing '".$DEVNAMES[$device_nr]."' from '$vm_name'\n";
+    $cmd .= "--port $next_dev --medium none";
+    print "Removing '".$STORAGE{$vm_name}{$controller_nr}{"CTRL"}."' from '$vm_name'\n";
     &run("$cmd");
 
     # VBoxManage closemedium disk 3ea0790b-8631-4715-9c93-cac4a0eb78da
