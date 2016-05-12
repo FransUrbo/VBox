@@ -2,50 +2,77 @@
 
 # $Id: vboxhst,v 1.2 2011-11-15 18:25:57 turbo Exp $
 
-DEFAULT_HOSTS="Astrix,Debian ZFS Tests,JeOS,Debian Squeeze amd64,Debian Lenny i386"
+### BEGIN INIT INFO
+# Provides:       vboxhst
+# Required-Start: vboxdrv
+# Required-Stop:
+# Default-Start:  2 3 4 5
+# Default-Stop:   0 1 6
+# Short-Description: VirtualBox Virtual Machines
+### END INIT INFO
+
 CACHE=/var/cache/vbox/vms
+
+export VBOX_HWVIRTEX_IGNORE_SVM_IN_USE=true
 
 case "$1" in
     start) 
         renice 5 $$
-	/etc/init.d/open-iscsi start
-	iscsiadm -m discovery -t st -p 192.168.69.8
-#	iscsiadm -m node -L all
+	iscsiadm -m discovery -t st -p 192.168.69.8:3260 > /dev/null 2>&1
+	[ "$?" -gt 0 ] && exit 1
 
-        if [ -f $CACHE ]; then
+        if [ -f "${CACHE}" ]; then
             echo "Starting VM: "
-            cat $CACHE | \
+            cat "${CACHE}" | \
                 while read host; do
-                    echo "* $host: "
-                    /usr/bin/VBoxManage -nologo startvm "$host" -type headless
+                    echo -n "* $host... "
+                    /usr/bin/VBoxManage -nologo startvm "$host" -type headless > /dev/null
+		    [ "$?" = 0 ] && echo "done." || echo "FAIL."
+		    sleep 5
                 done
 
-            rm -f $CACHE
-        elif [ -n "$DEFAULT_HOSTS" ]; then
+            rm -f "${CACHE}"
+        elif [ -f "/etc/vbox.cfg" ]; then
             echo "Starting VM: "
-            echo "$DEFAULT_HOSTS" | sed 's@,@\
-@g' | while read host; do
-                echo "* $host: "
-                /usr/bin/VBoxManage -nologo startvm "$host" -type headless
-            done
+	    cat /etc/vbox.cfg | \
+		egrep -v '^#|^$' | \
+		while read line; do
+		    echo -n "* $line... "
+                    /usr/bin/VBoxManage -nologo startvm "$line" -type headless > /dev/null
+		    if [ "$?" = 0 ]; then
+			echo "$line" >> "${CACHE}"
+			echo "done."
+		    else
+			echo "FAIL."
+		    fi
+                done
         else
             echo "No VM's to start..."
         fi
+
+	for vm in `VBoxCtrl l | grep saved | sed 's@:.*@@'`; do echo VBoxCtrl r $vm; done
         ;;
 
     stop)
+	rm -f "${CACHE}"
         echo "Suspending VMs: "
-        /usr/bin/VBoxManage -nologo list runningvms | \
-            sed -e 's@ {.*@@' -e 's@"@@g' > $CACHE
+	/usr/local/sbin/VBoxCtrl l | \
+	    egrep 'On|Paused' | \
+	    sed -e 's@  .*@@' | \
+	while read vm; do
+	    IFS=": "
+	    set -- $(echo "$vm")
+	    vm_nr="${1}"; shift
+	    vm_name="${*}"
 
-        cat $CACHE | \
-            while read host; do
-                echo -n "'$host' "
-                /usr/bin/VBoxManage -nologo controlvm "$host" savestate
-            done
+	    echo -n "* $vm_name... "
+	    /usr/local/sbin/VBoxCtrl s $vm_nr
+	    [ "$?" = 0 ] && echo "done." || echo "FAIL."
+	    echo "$vm_name" >> "${CACHE}"
+	done
 
-#	iscsiadm -m node -u all
-	/etc/init.d/open-iscsi stop
+	umount /Machines/Machines && \
+	    iscsiadm -m node --logoutall=all
         ;;
 
     forcequit)
@@ -53,13 +80,10 @@ case "$1" in
         /usr/bin/VBoxManage -nologo list runningvms | \
             sed -e 's@ {.*@@' -e 's@"@@g' | \
             while read host; do
-                echo "* $host: "
+                echo -n "* $host... "
                 /usr/bin/VBoxManage -nologo controlvm "$host" poweroff
+		[ "$?" = 0 ] && echo "done." || echo "FAIL."
             done
-
-
-	iscsiadm -m node -u all
-	/etc/init.d/open-iscsi stop
         ;;
 
     *)
