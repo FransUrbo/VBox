@@ -31,6 +31,7 @@ sub run() {
 	print "CMD: '$cmd'\n";
     } else {
 	if(system("$cmd $OUT")) {
+	    print "CMD: $cmd\n";
 	    &output_log();
 	    exit(1);
 	}
@@ -38,15 +39,24 @@ sub run() {
 }
 
 sub get_machine_name() {
-    system("/usr/bin/clear");
+    system("/usr/bin/clear") if(!$ARG_TARGET);
 
     # --------------------------------
     # Output list of VM's (with current state)
     $i = 1;
     foreach $vmname (sort keys %VMS) {
-	if(($#ARGV == -1) || ($ARGV[0] =~ /^l/i)) {
-	    printf("%3d: %-30s %-3s\n",
+	if(!$ARG_VM) {
+	    printf("%3d: %-40s %-3s\n",
 		   $i, $VMS{$vmname}, $STATE{$vmname});
+	}
+
+	my $tmpnam = $ARG_VM;
+	$tmpnam =~ s/\(/\\\(/;
+	$tmpnam =~ s/\)/\\\)/;
+
+	if($tmpnam && ($vmname =~ /$tmpnam/)) {
+	    $vm_name = $ARG_VM;
+	    last
 	}
 
 	# Setup a VM list, sorted by name
@@ -56,12 +66,8 @@ sub get_machine_name() {
 	$i++;
     }
 
-    # Get VM number
-    if($#ARGV == 1) {
-	$vm = $ARGV[1];
-    } else {
-	# -----
-	# Choose _which_ VM to control
+    # Choose _which_ VM to control
+    if(!$tmpnam && !$vm_name) {
 	if($cmd eq "Add") {
 	    printf("Add '%s' to which VM [1-%d]? ", $target_name, $i-1);
 	} else {
@@ -69,12 +75,12 @@ sub get_machine_name() {
 	}
 	$vm = <STDIN>;
 	chomp($vm);
-    }
 
-    # --------------------------------
-    # Get VM/target name
-    $nr = sprintf("%0.3d", $vm);
-    $vm_name = $VM_LIST{$nr};
+	# --------------------------------
+	# Get VM/target name
+	$nr = sprintf("%0.3d", $vm);
+	$vm_name = $VM_LIST{$nr};
+    }
 }
 
 sub get_devices() {
@@ -92,7 +98,8 @@ sub get_devices() {
 	if($line =~ /^$STORAGE{$vm_name}{$controller_nr}{"CTRL"}/) {
 	    $nr = $line;
 	    $nr =~ s/$STORAGE{$vm_name}{$controller_nr}{"CTRL"} \(//;
-	    $nr =~ s/,.*//;
+	    $nr =~ s/\)\:.*//;
+	    $nr =~ s/, /:/;
 
 	    if($line !~ /Empty$/) {
 		$dev = $line;
@@ -177,33 +184,50 @@ sub get_vms() {
 
 # ========================================================================================================
 
+# Update list of targets
+open(ISCSIADM, "iscsiadm -m discovery |")
+    || die("Can't discover, $!\n");
+$ip = <ISCSIADM>; chomp($ip); $ip =~ s/ .*//;
+close(ISCSIADM);
+
+system("iscsiadm -m discovery -t st -p $ip > /dev/null");
+
 # --------------------------------
-#if($ARGV[0] =~ /^l/i) {
-#    $EXIT=0;
-#    goto bye;
-#} elsif($#ARGV == 1) {
-#    $cmd = $ARGV[0];
-#} else {
+$target = "";
+if($ARGV[0] =~ /^iqn/) {
+    $cmd = 'Add';
+    $ARG_TARGET = $ARGV[0];
+
+    if($ARGV[1]) {
+	$ARG_VM = $ARGV[1];
+    }
+
+    if($ARGV[2]) {
+	$ARG_CTRL = $ARGV[2];
+    }
+} else {
     # -----
     # Choose what to do with the VM (Start, Stop, Pause)
     print "Command: [A]dd target to host, [D]etach target from host or [Q]uit? ";
     $cmd = <STDIN>;
     chomp($cmd);
-#}
+}
 
 # --------------------------------
 # Get command
-if($cmd =~ /^a/i) {    $cmd="Add"; }
-elsif($cmd =~ /^d/i) { $cmd="Delete"; }
-else {
-    print "No such command!\n";
-    exit(0);
+if(!$ARG_TARGET) {
+    if($cmd =~ /^a/i) {    $cmd="Add"; }
+    elsif($cmd =~ /^d/i) { $cmd="Delete"; }
+    else {
+	print "No such command!\n";
+	exit(0);
+    }
 }
 
 # ========================================================================================================
 
 # Fetch all iSCSI targets availible
-open(ISCSIADM, "iscsiadm -m node |")
+open(ISCSIADM, "iscsiadm -m node | sort -k2 | grep 192.168.69.8 | ")
     || die("Can't open iscsiadm, $!\n");
 while(! eof(ISCSIADM)) {
     $line = <ISCSIADM>;
@@ -222,7 +246,7 @@ if($#targets < 0) {
 # ========================================================================================================
 
 if($cmd eq "Add") { 
-    system("/usr/bin/clear");
+    system("/usr/bin/clear") if(!$ARG_TARGET);
 
     # ADD TARGET TO HOST
     # ================================ TARGET
@@ -259,17 +283,29 @@ if($cmd eq "Add") {
 	    }
 	}
 
-	printf("%3d:$mark %-30s\n", $i, $target);
+	if($ARG_TARGET) {
+	    if($target =~ /$ARG_TARGET/) {
+		$target_nr = $i;
+		last;
+	    }
+	} else {
+	    $iqn = $target;
+	    $iqn =~ s,.* ,,;
+	    printf("%3d:$mark %-30s\n", $i, $iqn);
+	}
 	$i++;
     }
 
-    # --------------------------------
-    # Choose target
-    print "* => Already attached to host\n" if($existing_targets);
-    print "Which target to add? ";
-    $target_nr = <STDIN>;
-    chomp($target_nr);
-    print "\n";
+    if(!$ARG_TARGET && !$target_nr) {
+	# --------------------------------
+	# Choose target
+
+	print "* => Already attached to host\n" if($existing_targets);
+	print "Which target to add? ";
+	$target_nr = <STDIN>;
+	chomp($target_nr);
+	print "\n";
+    }
 
     # --------------------------------
     # Separate server and target
@@ -321,12 +357,21 @@ start:
 	if($cmd eq "Add") {
 	    # More than one - select
 	    for($i=0; $STORAGE{$vm_name}{$i}{"CTRL"}; $i++) {
-		printf("%d: %s\n", $i, $STORAGE{$vm_name}{$i}{"CTRL"});
+		if($ARG_CTRL) {
+		    if($STORAGE{$vm_name}{$i}{"CTRL"} =~ /$ARG_CTRL/) {
+			$controller_nr = $i;
+			last;
+		    }
+		} else {
+		    printf("%d: %s\n", $i, $STORAGE{$vm_name}{$i}{"CTRL"});
+		}
 	    }
 
-	    print "Which storage controller would you like to add it to? ";
-	    $controller_nr = <STDIN>;
-	    chomp($controller_nr);
+	    if(!$ARG_CTRL && !$controller_nr) {
+		print "Which storage controller would you like to add it to? ";
+		$controller_nr = <STDIN>;
+		chomp($controller_nr);
+	    }
 	}
     } else {
 	# Only one - take it.
@@ -371,7 +416,7 @@ if($cmd eq "Delete") {
     chomp($device_nr);
     $device_nr--;
 
-    ($controller_nr, $dev, $uuid) = split(":", $DEVS[$device_nr]);
+    ($controller_nr, $port, $dev, $uuid) = split(":", $DEVS[$device_nr]);
     $controller_name = $STORAGE{$vm_name}{$controller_nr}{"CTRL"};
 
     $next_dev--; # get_devices() is increasing the value, which is fine in 'Add', but not 'Delete'.
@@ -384,7 +429,7 @@ if(($cmd eq "Add") && $vm_name && $target_server && $target_name && $controller_
     #	--port 5 --type hdd --medium iscsi --server 192.168.69.8:3260 \
     #	--target iqn.2011-12.com.bayour:storage.nexenta.cp1 --lun 0
     $cmd  = "$CMD storageattach \"$vm_name\" --storagectl \"$controller_name\" ";
-    $cmd .= "--port $next_dev --type hdd --medium iscsi --server $target_server ";
+    $cmd .= "--port $next_dev --device 0 --type hdd --medium iscsi --server $target_server ";
     $cmd .= "--target $target_name --lun 0"; # --mtype immutable";
     print "Adding '$target_name' to '$vm_name'\n";
     &run("$cmd");
@@ -392,7 +437,7 @@ if(($cmd eq "Add") && $vm_name && $target_server && $target_name && $controller_
     # VBoxManage storageattach "Nexenta CP 1.0.1" --storagectl "SATA Controller" \
     #	--port 5 --medium none
     $cmd  = "$CMD storageattach \"$vm_name\" --storagectl \"$controller_name\" ";
-    $cmd .= "--port $next_dev --medium none";
+    $cmd .= "--port $port --device $dev --medium none";
     print "Removing '".$STORAGE{$vm_name}{$controller_nr}{"CTRL"}."' from '$vm_name'\n";
     &run("$cmd");
 
@@ -401,4 +446,3 @@ if(($cmd eq "Add") && $vm_name && $target_server && $target_name && $controller_
     print "Removing '".$STORAGE{$vm_name}{$controller_nr}{"CTRL"}."'\n";
     &run("$cmd");
 }
-

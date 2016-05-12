@@ -10,7 +10,7 @@ END {
 
 $CMD = "/usr/bin/VBoxManage -nologo";
 $TMPFILE = `tempfile -d /tmp -p vbox.`; chomp($TMPFILE);
-$OUT = "> $TMPFILE 2>&1";
+$OUT = ">> $TMPFILE 2>&1";
 
 undef($ENV{'LANGUAGE'});
 undef($ENV{'LC_ALL'});
@@ -51,7 +51,7 @@ sub plug_cpus() {
 
 # -----
 # Get list of VM's
-open(CMD, "$CMD list --long vms |")
+open(CMD, "$CMD list --long vms 2> /dev/null |")
     || die ("Can't call VBoxManage, $!\n");
 while(! eof(CMD) ) {
     $line = <CMD>;
@@ -75,6 +75,7 @@ while(! eof(CMD) ) {
 
         $line =~ s/running/On/;
         $line =~ s/powered off/Off/;
+	$line =~ s/poweroff/Off/;
         $line =~ s/paused/Paused/;
 
         $STATE{$name} = $line;
@@ -104,7 +105,7 @@ close(CMD);
 $i = 1;
 foreach $name (sort keys %VMS) {
     if(($#ARGV == -1) || ($ARGV[0] =~ /^l/i)) {
-	printf("%3d: %-30s %-3s (%s)\n",
+	printf("%3d: %-40s %-3s (%s)\n",
 	       $i, $VMS{$name}, $STATE{$name}, $PORTS{$name});
     }
 
@@ -122,13 +123,14 @@ foreach $name (sort keys %VMS) {
 if($ARGV[0] =~ /^l/i) {
     $EXIT=0;
     goto bye;
-} elsif($#ARGV == 1) {
+} elsif($#ARGV >= 1) {
     $cmd = $ARGV[0];
 } else {
     # -----
     # Choose what to do with the VM (Start, Stop, Pause)
     print "Command: [S]top, [P]ause, [R]un, Restar[t], S[n]apshot, [I]nfo,\n";
-    print "         [C]lone, (un)[H]otplug CPUs, [F]orce stop or [Q]uit? ";
+    print "         [C]lone, (un)[H]otplug CPUs, [D]etach disk, [F]orce stop or\n";
+    print "         [Q]uit? ";
     $cmd = <STDIN>;
     chomp($cmd);
 }
@@ -142,6 +144,7 @@ if($cmd =~ /^p/i) {      $cmd="Pause";
 } elsif($cmd =~ /^t/i) { $cmd="Restart";
 } elsif($cmd =~ /^h/i) { $cmd="Hotplug";
 } elsif($cmd =~ /^c/i) { $cmd="Clone";
+} elsif($cmd =~ /^d/i) { $cmd="DetachDisk";
 } elsif($cmd =~ /^f/i) { $cmd="ForceStop";
 } elsif($cmd =~ /^q/i) { $EXIT=0; goto bye;
 } else {
@@ -151,7 +154,7 @@ if($cmd =~ /^p/i) {      $cmd="Pause";
 }
 
 # Get VM number
-if($#ARGV == 1) {
+if($#ARGV >= 1) {
     $vm = $ARGV[1];
 } else {
     # -----
@@ -165,161 +168,260 @@ if($#ARGV == 1) {
 $nr = sprintf("%0.3d", $vm);
 $name = $VM_LIST{$nr};
 
+# =======================================================================
+
+sub get_vm_state {
+    $state=`$CMD showvminfo "$name" -machinereadable 2> /dev/null | grep ^VMState= | sed -e 's/.*="//' -e 's/"//'`;
+    chomp($state);
+
+    $state =~ s/running/On/;
+    $state =~ s/powered off/Off/;
+    $state =~ s/poweroff/Off/;
+    $state =~ s/paused/Paused/;
+
+    return $state;
+}
+
+sub do_start {
+    if($STATE{$name} eq 'Paused' ) {
+	system("$CMD controlvm '$name' resume $OUT");
+    } elsif(($STATE{$name} eq 'Off') or ($STATE{$name} eq 'saved') or
+	($STATE{$name} eq 'aborted')) {
+	if(($STATE{$name} eq 'Off') && ($TELEPORTER{$name} eq 'on')) {
+	    system("$CMD startvm '$name' -type headless > /dev/null 2>&1 &");
+	    return;
+	} else {
+	    system("$CMD startvm '$name' -type headless $OUT");
+	}
+    } else {
+	print "Already running...\n";
+	$EXIT=0;
+	return;
+    }
+    
+    sleep(1);
+	
+    $state = &get_vm_state($name);
+    if($state eq 'On') {
+	$port=`$CMD showvminfo "$name" -machinereadable 2> /dev/null | grep '^vrdeport=' | sed "s/.*=//"`;
+	chomp($port);
+	
+	print "Listening on RDP port: $port\n";
+    } else {
+	print "Failed to start!\n\n";
+	&output_log();
+	$EXIT=1;
+	return;
+    }
+}
+
+sub do_stop {
+    if($STATE{$name} eq 'On' || $STATE{$name} eq 'unknown' || 
+       $STATE{$name} eq 'Paused' || $STATE{$name} eq 'aborted')
+    {
+	print "Sending power down to '$name'... ";
+	system("$CMD controlvm '$name' acpipowerbutton $OUT");
+	print "done.\n";
+	
+	$count = 0; $success = 0;
+	
+	print "Waiting for VM to shutdown (max 30s)";
+	while(($count <= 5) && !$success) {
+	    sleep(5);
+	    print ".";
+	    
+	    open(CMD, "$CMD showvminfo '$name' 2> /dev/null |")
+		|| die("Can't call VBoxManage, $!\n");
+	    while(!eof(CMD) && !$success) {
+		$line = <CMD>;
+		chomp($line);
+		
+		if($line =~ /^State:  /) {
+		    $line =~ s/.*  //;
+		    $line =~ s/ \(.*//;
+		    
+		    if($line =~ /powered off/) {
+			print " done.\n";
+			
+			$count = 5;
+			$success = 1;
+			last;
+		    }
+		}
+	    }
+	    close(CMD);
+	    
+	    $count++;
+	}
+	
+	if(!$success) {
+	    print "FAILED! Forcing off and hoping for the best.\n";
+	    system("$CMD controlvm '$name' poweroff $OUT");
+	}
+	
+	return;
+    } else {
+	print "VM not running...\n";
+	$EXIT=0;
+	return;
+    }
+}
+
+sub do_detach {
+    my $detach_ctrl = shift;
+    my $detach_disk = shift;
+
+    $EXIT=0;
+
+    open(CMD, "$CMD showvminfo '$name' 2> /dev/null |")
+	|| die ("Can't call VBoxManage, $!\n");
+    while(! eof(CMD) ) {
+	$line = <CMD>;
+	chomp($line);
+
+	# SATA (0, 0): /Machines/Machines.dsk/Debian Wheezy/Debian Wheezy ZFS Devel (x64)/Debian Wheezy ZFS Tests 2 (x64) - Disk 1.vdi (UUID: 15ae3c3c-cd56-4e05-b04a-81
+	if(($line =~ /^IDE/) || ($line =~ /^SATA/) || ($line =~ /^SCSI/)) {
+	    $line =~ s/\://g;
+
+	    my @parts = split(" ", $line);
+	    $parts[1] =~ s/\(//;
+	    $parts[1] =~ s/,//;
+	    $parts[2] =~ s/\)//;
+
+	    # Get controller and port
+	    my $ctrl = $parts[0];
+	    my $port = $parts[1].":".$parts[2];
+
+	    # Just get the filname
+	    my $tmp = $line;
+	    $tmp =~ s/ \(UUID.*//;
+	    $tmp =~ s/.*[0-9]\) //;
+
+	    # Setup the hash
+	    $CTRLS{$name}{$ctrl}{$port} = $tmp;
+	}
+    }
+    close(CMD);
+
+    if ($CTRLS{$name}{$detach_ctrl}{$detach_disk}) {
+	$EXIT=1 if(system("$CMD storagectl '$name' --name '$CTRLS{$name}{$detach_ctrl}{$detach_disk}' --remove"));
+    }
+    print "\n";
+    return;
+}
+
+sub do_stop_force {
+    $EXIT=0;
+    $EXIT=1 if(system("$CMD controlvm '$name' poweroff $OUT"));
+    print "\n";
+    return;
+}
+
+sub do_restart {
+    if($STATE{$name} eq 'On' || $STATE{$name} eq 'unknown' || 
+       $STATE{$name} eq 'Paused' || $STATE{$name} eq 'guru meditation')
+    {
+	print "Powering down '$name'... ";
+	if($STATE{$name} eq 'On') {
+	    system("$CMD controlvm '$name' acpipowerbutton $OUT");
+	} elsif(! system("$CMD controlvm '$name' reset $OUT")) {
+	    # Couldn't just reset it...
+	    system("$CMD controlvm '$name' poweroff $OUT");
+	}
+	print "done.\n";
+	
+	sleep(2);
+	
+	print "Starting '$name'... ";
+	system("$CMD startvm '$name' -type headless $OUT");
+	print "done.\n";
+    } elsif($STATE{$name} eq 'aborted') {
+	# Tricky!
+	print "$name is in Aborted state. Restarting might fail but trying anyway!\n";
+	
+	# 1. Find UUID of host.
+	$uuid =  `$CMD list vms 2> /dev/null | egrep '^"$name"'`;
+	$uuid =~ s/.*{(.*)}/$1/;
+	
+	# 2. Run the VBoxHeadless command manually
+	$cmd = "/usr/lib/virtualbox/VBoxHeadless --comment '$name' ";
+	$cmd = "$cmd --startvm $uuid --vrde config $OUT";
+	
+	if(! fork()) {
+	    # Start from the child...
+	    system($cmd);
+
+	    exit();
+	}
+
+	sleep(5);
+
+	# Force it of
+	&do_stop_force();
+	$STATE{$name} = &get_vm_state();
+
+	sleep(2);
+
+	# Turn it on (the normal way)
+	&do_start();
+
+	print "done.\n";
+    } else {
+	print "VM not running...\n";
+	$EXIT=0;
+	return;
+    }
+}
+
+sub do_pause {
+    if($STATE{$name} eq 'On' ) {
+	system("$CMD controlvm '$name' pause $OUT");
+    } else {
+	print "VM not running...\n";
+	$EXIT=0;
+	return;
+    }
+}
+
+# =======================================================================
+
 if($VMS{$name}) {
-    printf "VM: '$name' ($nr)\n" if($#ARGV == 1);
+    printf "VM: '$name' ($nr) => " if($#ARGV >= 1);
     
     # -----
     # START a VM
     if($cmd eq 'Start') {
-        if($STATE{$name} eq 'Paused' ) {
-            system("$CMD controlvm '$name' resume $OUT");
-        } elsif(($STATE{$name} eq 'Off') or ($STATE{$name} eq 'saved')) {
-	    if(($STATE{$name} eq 'Off') && ($TELEPORTER{$name} eq 'on')) {
-		system("$CMD startvm '$name' -type headless > /dev/null 2>&1 &");
-		goto bye;
-	    } else {
-		system("$CMD startvm '$name' -type headless $OUT");
-	    }
-        } else {
-            print "Already running...\n";
-	    $EXIT=0;
-	    goto bye;
-        }
-	
-        sleep(1);
-	
-        $state=`$CMD showvminfo "$name" -machinereadable | grep ^VMState= | sed -e 's/.*="//' -e 's/"//'`;
-        chomp($state);
-        if($state eq 'running') {
-            $port=`$CMD showvminfo "$name" -machinereadable | grep '^vrdeport=' | sed "s/.*=//"`;
-            chomp($port);
-	    
-            print "Listening on RDP port: $port\n";
-        } else {
-            print "Failed to start!\n\n";
-	    &output_log();
-	    $EXIT=1;
-	    goto bye;
-        }
-	
+	&do_start();
+
     # -----
     # STOP a VM
     } elsif($cmd eq 'Stop' ) {
-        if($STATE{$name} eq 'On' || $STATE{$name} eq 'unknown' || 
-           $STATE{$name} eq 'Paused' || $STATE{$name} eq 'aborted')
-        {
-            print "Sending power down to '$name'... ";
-            system("$CMD controlvm '$name' acpipowerbutton $OUT");
-            print "done.\n";
+	&do_stop();
 
-            $count = 0; $success = 0;
-
-            print "Waiting for VM to shutdown (max 30s)";
-            while(($count <= 5) && !$success) {
-                sleep(5);
-                print ".";
-
-                open(CMD, "$CMD showvminfo '$name' |")
-                    || die("Can't call VBoxManage, $!\n");
-                while(!eof(CMD) && !$success) {
-                    $line = <CMD>;
-                    chomp($line);
-
-                    if($line =~ /^State:  /) {
-                        $line =~ s/.*  //;
-                        $line =~ s/ \(.*//;
-
-                        if($line =~ /powered off/) {
-                            print " done.\n";
-                            
-                            $count = 5;
-                            $success = 1;
-                            last;
-                        }
-                    }
-                }
-                close(CMD);
-
-                $count++;
-            }
-
-            if(!$success) {
-                print "FAILED! Forcing off and hoping for the best.\n";
-                system("$CMD controlvm '$name' poweroff $OUT");
-            }
-
-            goto bye;
-        } else {
-            print "VM not running...\n";
-	    $EXIT=0;
-	    goto bye;
-        }
+    # -----
+    # Detach disk from VM
+    } elsif($cmd eq 'DetachDisk' ) {
+	&do_detach($ARGV[2], $ARGV[3]);
 
     # -----
     # Forcibly STOP a VM
     } elsif($cmd eq 'ForceStop' ) {
-	$EXIT=0;
-	$EXIT=1 if(system("$CMD controlvm '$name' poweroff $OUT"));
-	goto bye;
+	&do_stop_force();
 
     # -----
     # RESTART a VM
     } elsif($cmd eq 'Restart') {
-        if($STATE{$name} eq 'On' || $STATE{$name} eq 'unknown' || 
-           $STATE{$name} eq 'Paused' || $STATE{$name} eq 'guru meditation')
-        {
-            print "Powering down '$name'... ";
-            if($STATE{$name} eq 'On') {
-                system("$CMD controlvm '$name' acpipowerbutton $OUT");
-            } elsif(! system("$CMD controlvm '$name' reset $OUT")) {
-		# Couldn't just reset it...
-		system("$CMD controlvm '$name' poweroff $OUT");
-            }
-            print "done.\n";
-
-            sleep(2);
-
-            print "Starting '$name'... ";
-            system("$CMD startvm '$name' -type headless $OUT");
-            print "done.\n";
-	} elsif($STATE{$name} eq 'aborted') {
-	    # Tricky!
-	    print "VM: '$name' is in Aborted state. Restarting might fail but trying anyway!\n";
-
-	    # 1. Find UUID of host.
-	    $uuid =  `$CMD list vms | egrep '^"$name"'`;
-	    $uuid =~ s/.*{(.*)}/$1/;
-	    print "uuid: $uuid\n";
-
-	    # 2. Run the VBoxHeadless command manually
-	    $cmd = "/usr/lib/virtualbox/VBoxHeadless --comment '$name' ";
-	    $cmd = "$cmd --startvm $uuid --vrde config > /dev/null 2>&1";
-
-	    if( ! fork() ) {
-		system($cmd);
-	    }
-	    print "done.\n";
-        } else {
-            print "VM not running...\n";
-	    $EXIT=0;
-	    goto bye;
-        }
+	&do_restart();
 
     # -----
     # PAUSE a VM
     } elsif($cmd eq 'Pause' ) {
-        if($STATE{$name} eq 'On' ) {
-            system("$CMD controlvm '$name' pause $OUT");
-        } else {
-            print "VM not running...\n";
-	    $EXIT=0;
-	    goto bye;
-        }
+	&do_pause();
 
     # -----
     # VIEW info of a VM
     } elsif($cmd eq 'Display') {
-        if(system("$CMD showvminfo '$name' -machinereadable | less")) {
+        if(system("$CMD showvminfo '$name' -machinereadable 2> /dev/null | less")) {
 	    &output_log();
 	    $EXIT=1;
 	    goto bye;
